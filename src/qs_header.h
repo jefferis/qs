@@ -8,6 +8,45 @@
 #include "RApiSerializeAPI.h"
 #include "zstd.h"
 
+#include <cstddef>
+#include <memory>
+#include <type_traits>
+#include <utility>
+
+// Make unique function for c++11 (from c++14)
+// https://stackoverflow.com/questions/17902405/how-to-implement-make-unique-function-in-c11
+// this is kind of dangerous to add directly into std namespace, dont do this if compiling with c++14
+namespace std {
+  template<class T> struct _Unique_if {
+    typedef unique_ptr<T> _Single_object;
+  };
+  
+  template<class T> struct _Unique_if<T[]> {
+    typedef unique_ptr<T[]> _Unknown_bound;
+  };
+  
+  template<class T, size_t N> struct _Unique_if<T[N]> {
+    typedef void _Known_bound;
+  };
+  
+  template<class T, class... Args>
+  typename _Unique_if<T>::_Single_object
+    make_unique(Args&&... args) {
+      return unique_ptr<T>(new T(std::forward<Args>(args)...));
+    }
+  
+  template<class T>
+  typename _Unique_if<T>::_Unknown_bound
+    make_unique(size_t n) {
+      typedef typename remove_extent<T>::type U;
+      return unique_ptr<T>(new U[n]());
+    }
+  
+  template<class T, class... Args>
+  typename _Unique_if<T>::_Known_bound
+    make_unique(Args&&...) = delete;
+}
+
 ////////////////////////////////////////////////////////////////
 // common utility functions and constants
 ////////////////////////////////////////////////////////////////
@@ -48,35 +87,34 @@ static const unsigned char logical_header_64 = 0x10;
 static const unsigned char raw_header_32 = 0x17;
 static const unsigned char raw_header_64 = 0x18;
 
-// c++14 binary literals. TODO: rewrite above numbers in binary for clarity
 static const unsigned char null_header = 0x00; 
 
-static const unsigned char character_header_5 = 0b10100000; 
-static const unsigned char character_header_8 = 0b00010001;
-static const unsigned char character_header_16 = 0b00010010;
-static const unsigned char character_header_32 = 0b00010011;
-static const unsigned char character_header_64 = 0b00010100;
+static const unsigned char character_header_5 = 0xA0; 
+static const unsigned char character_header_8 = 0x11;
+static const unsigned char character_header_16 = 0x12;
+static const unsigned char character_header_32 = 0x13;
+static const unsigned char character_header_64 = 0x14;
 
-static const unsigned char string_header_NA = 0b00001111;
-static const unsigned char string_header_5 = 0b00100000; 
-static const unsigned char string_header_8 = 0b00000001;
-static const unsigned char string_header_16 = 0b00000010;
-static const unsigned char string_header_32 = 0b00000011;
+static const unsigned char string_header_NA = 0x0F;
+static const unsigned char string_header_5 = 0x20; 
+static const unsigned char string_header_8 = 0x01;
+static const unsigned char string_header_16 = 0x02;
+static const unsigned char string_header_32 = 0x03;
 
-static const unsigned char string_enc_native = 0b00000000; 
-static const unsigned char string_enc_utf8 = 0b01000000;
-static const unsigned char string_enc_latin1 = 0b10000000;
-static const unsigned char string_enc_bytes = 0b11000000;
+static const unsigned char string_enc_native = 0x00; 
+static const unsigned char string_enc_utf8 = 0x40;
+static const unsigned char string_enc_latin1 = 0x80;
+static const unsigned char string_enc_bytes = 0xC0;
 
-static const unsigned char attribute_header_5 = 0b11100000;
-static const unsigned char attribute_header_8 = 0b00011110;
-static const unsigned char attribute_header_32 = 0b00011111;
+static const unsigned char attribute_header_5 = 0xE0;
+static const unsigned char attribute_header_8 = 0x1E;
+static const unsigned char attribute_header_32 = 0x1F;
 
-static const unsigned char complex_header_32 = 0b00010101;
-static const unsigned char complex_header_64 = 0b00010110;
+static const unsigned char complex_header_32 = 0x15;
+static const unsigned char complex_header_64 = 0x16;
 
-static const unsigned char nstype_header_32 = 0b00011001;
-static const unsigned char nstype_header_64 = 0b00011010;
+static const unsigned char nstype_header_32 = 0x19;
+static const unsigned char nstype_header_64 = 0x1A;
 
 static const std::set<SEXPTYPE> stypes = {REALSXP, INTSXP, LGLSXP, STRSXP, CHARSXP, NILSXP, VECSXP, CPLXSXP, RAWSXP};
 
