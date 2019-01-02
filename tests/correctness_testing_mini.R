@@ -184,14 +184,14 @@ for(i in 1:3) {
 }
 print("Data.frame test")
 
-# for(i in 1:3) {
-#   x1 <- rep( replicate(1000, { rep(letters, length.out=2^7+sample(10, size=1)) %>% paste(collapse="") }), length.out=1e5 )
-#   x1 <- data.table(str=x1,num = runif(1e5))
-#   qsave(x1, file="/tmp/test.z", 3)
-#   z <- qread(file="/tmp/test.z")
-#   stopifnot(all(z==x1))
-# }
-# print("Data.table test")
+for(i in 1:3) {
+  x1 <- rep( replicate(1000, { rep(letters, length.out=2^7+sample(10, size=1)) %>% paste(collapse="") }), length.out=1e5 )
+  x1 <- data.table(str=x1,num = runif(1e5))
+  qsave(x1, file="/tmp/test.z", 3)
+  z <- qread(file="/tmp/test.z")
+  stopifnot(all(z==x1))
+}
+print("Data.table test")
 
 for(i in 1:3) {
   x1 <- rep( replicate(1000, { rep(letters, length.out=2^7+sample(10, size=1)) %>% paste(collapse="") }), length.out=1e5 )
@@ -293,3 +293,22 @@ for(i in 1:3) {
   time[i] <- Sys.time() - time[i]
 }
 print(sprintf("Alt rep integer: %s s", signif(mean(time),4)))
+
+
+# Environment test
+time <- vector("numeric", length=3)
+for(i in 1:3) {
+  x1 <- new.env()
+  x1[["a"]] <- 1:1e5
+  x1[["b"]] <- runif(1e5)
+  x1[["c"]] <- qs::randomStrings(1e2)
+  time[i] <- Sys.time()
+  qsave(x1, file="/tmp/test.z", 3)
+  z <- qread(file="/tmp/test.z")
+  stopifnot(identical(z[["a"]], x1[["a"]]))
+  stopifnot(identical(z[["b"]], x1[["b"]]))
+  stopifnot(identical(z[["c"]], x1[["c"]]))
+  time[i] <- Sys.time() - time[i]
+}
+print(sprintf("Environment test: %s s", signif(mean(time),4)))
+
