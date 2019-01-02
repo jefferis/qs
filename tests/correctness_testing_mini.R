@@ -1,7 +1,6 @@
 suppressMessages(library(Rcpp))
 suppressMessages(library(dplyr))
-
-# suppressMessages(library(data.table))
+suppressMessages(library(data.table))
 library(qs)
 
 Sys.setenv("PKG_CXXFLAGS"="-std=c++14")
