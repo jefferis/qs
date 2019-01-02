@@ -5,9 +5,12 @@
 #include <algorithm>
 #include <memory>
 #include <array>
+#include "RApiSerializeAPI.h"
 #include "zstd.h"
 
-// utility functions and constants
+////////////////////////////////////////////////////////////////
+// common utility functions and constants
+////////////////////////////////////////////////////////////////
 
 using namespace Rcpp;
 static bool show_warnings = true;
@@ -72,6 +75,10 @@ static const unsigned char attribute_header_32 = 0b00011111;
 static const unsigned char complex_header_32 = 0b00010101;
 static const unsigned char complex_header_64 = 0b00010110;
 
+static const unsigned char nstype_header_32 = 0b00011001;
+static const unsigned char nstype_header_64 = 0b00011010;
+
+static const std::set<SEXPTYPE> stypes = {REALSXP, INTSXP, LGLSXP, STRSXP, CHARSXP, NILSXP, VECSXP, CPLXSXP, RAWSXP};
 
 // https://stackoverflow.com/questions/22346369/initialize-integer-literal-to-stdsize-t/22346540#22346540
 constexpr std::size_t intToSize ( unsigned long long n ) { return n; }
@@ -90,6 +97,10 @@ size_t readSizeFromFile8(std::ifstream & myFile) {
 }
 uint32_t char2Size4(std::array<char,4> a) { return *reinterpret_cast<uint32_t*>(a.data()); }
 uint64_t char2Size8(std::array<char,8> a) { return *reinterpret_cast<uint64_t*>(a.data()); }
+
+////////////////////////////////////////////////////////////////
+// de-serialization functions
+////////////////////////////////////////////////////////////////
 
 
 void readHeader(char* header, SEXPTYPE & object_type, size_t & r_array_len, size_t & data_offset) {
@@ -263,10 +274,20 @@ void readHeader(char* header, SEXPTYPE & object_type, size_t & r_array_len, size
     data_offset += 5;
     object_type = ANYSXP;
     return;
+  case nstype_header_32:
+    r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
+    data_offset += 5;
+    object_type = S4SXP;
+    return;
+  case nstype_header_64:
+    r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
+    data_offset += 9;
+    object_type = S4SXP;
+    return;
   }
+  // additional types
   throw exception("something went wrong (reading object header)");
 }
-
 
 
 void readStringHeader(char* header, uint32_t & r_string_len, cetype_t & ce_enc, size_t & data_offset) {
@@ -310,7 +331,275 @@ void readStringHeader(char* header, uint32_t & r_string_len, cetype_t & ce_enc, 
   throw exception("something went wrong (reading string header)");
 }
 
+RObject createRObject(SEXPTYPE type, size_t length) {
+  RObject obj;
+  switch(type) {
+  case VECSXP: 
+    obj = List(length);
+    // obj = Rcpp::Vector<VECSXP>(length) ;
+    break;
+  case REALSXP:
+    obj = NumericVector(length);
+    break;
+  case INTSXP:
+    obj = IntegerVector(length);
+    break;
+  case LGLSXP:
+    obj = LogicalVector(length);
+    break;
+  case RAWSXP:
+    obj = RawVector(length);
+    break;
+  case STRSXP:
+    obj = CharacterVector(length);
+    break;
+  case CPLXSXP:
+    obj = ComplexVector(length);
+    break;
+  case NILSXP:
+    obj = R_NilValue;
+  }
+  return obj;
+}
 
+
+// usage of shared_pts and weak_ptrs reference
+// https://thispointer.com/shared_ptr-binary-trees-and-the-problem-of-cyclic-references/
+// How I think this should work:
+// 1) Root node is a shared/unique ptr
+// 2) Children are added to parent node (when parent is a list), and parent node owns all children
+// 3) Recursively, root owns all children and subsequent children
+// 4) All external references should not own any node -- therefore, use raw pointer for external use outside of class
+//  Child nodes -- lists elements
+//  Attribute nodes -- attributes
+struct ObjNode {
+  size_t remaining_children = 0;
+  size_t remaining_attributes = 0;
+  ObjNode * parent;
+  std::vector< std::unique_ptr<ObjNode> > attributes;
+  std::vector< std::string > attributes_names;
+  std::vector< std::unique_ptr<ObjNode> > children; // children that need to be referenced later, not all of them
+  RObject obj;
+  ObjNode(SEXPTYPE type, size_t length, size_t attr_length=0) {
+    switch(type) {
+    case VECSXP: 
+      obj = List(length);
+      remaining_children = length;
+      break;
+    case REALSXP:
+      obj = NumericVector(length);
+      break;
+    case INTSXP:
+      obj = IntegerVector(length);
+      break;
+    case LGLSXP:
+      obj = LogicalVector(length);
+      break;
+    case RAWSXP:
+      obj = RawVector(length);
+      break;
+    case STRSXP:
+      obj = CharacterVector(length);
+      break;
+    case CPLXSXP:
+      obj = ComplexVector(length);
+      break;
+    case NILSXP:
+      obj = R_NilValue;
+    }
+    remaining_attributes = attr_length;
+  }
+  ObjNode() {}
+};
+
+
+struct String_Future {
+  RObject parentObj;
+  size_t position;
+  std::string fstring;
+  cetype_t enc;
+  String_Future(RObject pObj, size_t pos, int l, cetype_t e) {
+    parentObj = pObj;
+    position = pos;
+    fstring = std::string(l, '\0');
+    enc = e;
+  }
+  void push_string() {
+    //parentObj[position] = Rf_mkCharLenCE(fstring.data(), fstring.size(), enc);
+    SET_STRING_ELT(parentObj, position, Rf_mkCharLenCE(fstring.data(), fstring.size(), enc));
+  }
+  char* dataPtr() {
+    return &fstring[0];
+  }
+};
+
+
+struct NsObj_Future {
+  ObjNode * node;
+  size_t position;
+  bool is_attribute;
+  RawVector data;
+  NsObj_Future(ObjNode * no, size_t data_len, size_t pos, bool is_att) {
+    node = no;
+    position = pos;
+    is_attribute = is_att;
+    data = RawVector(data_len);
+  }
+  void push() {
+    node->obj = unserializeFromRaw(data);
+    if(!is_attribute && node->parent->parent != node->parent) { // not root and not attribute, then insert to list
+      SET_VECTOR_ELT(node->parent->obj, position, node->obj);
+    }
+  }
+  char* dataPtr() {
+    return reinterpret_cast<char*>(RAW(data));
+  }
+};
+
+
+RObject addNewNodeToParent(ObjNode *& parent, SEXPTYPE type, size_t length, size_t attr_length) {
+  if( parent->parent == parent ) { // root
+    std::unique_ptr<ObjNode> child = std::make_unique<ObjNode>(type, length, attr_length);
+    child->parent = parent;
+    parent->children.push_back(std::move(child));
+    parent = parent->children.back().get();
+    return parent->obj;
+  }
+  
+  // std::cout << type << " " << length << " " << attr_length << " new node \n";
+  // std::cout << TYPEOF(parent->obj) << " " << parent->remaining_children << " " << parent->remaining_attributes << " parent \n";
+  if(parent->remaining_attributes == 0 && parent->remaining_children == 0) throw exception("too many serialized objects in attributes or list");
+  
+  RObject return_obj;
+  if(parent->remaining_children > 0) { 
+    if(attr_length == 0 && (type != VECSXP || length == 0)) { // leaf node are objects with no attributes/children
+      return_obj = createRObject(type, length);
+      SET_VECTOR_ELT(parent->obj, Rf_xlength(parent->obj) - parent->remaining_children, return_obj);
+      parent->remaining_children--;
+      
+      while(parent->remaining_attributes == 0 && parent->remaining_children == 0) {
+        parent = parent->parent;
+        // std::cout << "down\n";
+        if( parent->parent == parent ) break; // root
+      }
+    } else {
+      std::unique_ptr<ObjNode> child = std::make_unique<ObjNode>(type, length, attr_length);
+      child->parent = parent;
+      return_obj = child->obj;
+      parent->children.push_back(std::move(child));
+      SET_VECTOR_ELT(parent->obj, Rf_xlength(parent->obj) - parent->remaining_children, parent->children.back()->obj);
+      parent->remaining_children--;
+      
+      parent = parent->children.back().get();
+      // std::cout << "up\n";
+      // std::cout << TYPEOF(parent->obj) << " " << parent->remaining_children << " " << parent->remaining_attributes << " parent \n";
+    }
+  } else { // if parent->remaining_attributes > 0
+    std::unique_ptr<ObjNode> child = std::make_unique<ObjNode>(type, length, attr_length);
+    child->parent = parent;
+    return_obj = child->obj;
+    parent->attributes.push_back(std::move(child));
+    parent->remaining_attributes--;
+    
+    if(attr_length > 0 || (type == VECSXP && length > 0)) {
+      parent = parent->attributes.back().get();
+      // std::cout << "up\n";
+      // std::cout << TYPEOF(parent->obj) << " " << parent->remaining_children << " " << parent->remaining_attributes << " parent \n";
+    } else {
+      while(parent->remaining_attributes == 0 && parent->remaining_children == 0) {
+        parent = parent->parent;
+        // std::cout << "down\n";
+        if( parent->parent == parent ) break; // root
+      }
+    }
+  }
+  return return_obj;
+}
+
+
+NsObj_Future addNewNsNodeToParent(ObjNode *& parent, size_t length) {
+  std::unique_ptr<ObjNode> child = std::make_unique<ObjNode>();
+  child->parent = parent;
+  child->obj = R_NilValue; // placeholder
+  if( parent->parent == parent ) { // root
+    parent->children.push_back(std::move(child));
+    return NsObj_Future(parent->children.back().get(), length, 0, false);
+  }
+  
+  if(parent->remaining_attributes == 0 && parent->remaining_children == 0) throw exception("too many serialized objects in attributes or list");
+  if(parent->remaining_children > 0) { 
+    parent->children.push_back(std::move(child));
+    NsObj_Future return_obj = NsObj_Future(parent->children.back().get(), length, Rf_xlength(parent->obj) - parent->remaining_children, false);
+    parent->remaining_children--;
+    while(parent->remaining_attributes == 0 && parent->remaining_children == 0) {
+      parent = parent->parent;
+      if( parent->parent == parent ) break; // root
+    }
+    return return_obj;
+  } else { // if parent->remaining_attributes > 0
+    parent->attributes.push_back(std::move(child));
+    NsObj_Future return_obj = NsObj_Future(parent->attributes.back().get(), length, 0, true);
+    parent->remaining_attributes--;
+    while(parent->remaining_attributes == 0 && parent->remaining_children == 0) {
+      parent = parent->parent;
+      if( parent->parent == parent ) break; // root
+    }
+    return return_obj;
+  }
+}
+
+
+char * getObjDataPointer(RObject & obj, SEXPTYPE obj_type, size_t & type_char_width) {
+  char* outp;
+  switch(obj_type) {
+  case REALSXP: 
+    outp = reinterpret_cast<char*>(REAL(obj));
+    type_char_width = 8;
+    break;
+  case INTSXP: 
+    outp = reinterpret_cast<char*>(INTEGER(obj));
+    type_char_width = 4;
+    break;
+  case LGLSXP: 
+    outp = reinterpret_cast<char*>(LOGICAL(obj));
+    type_char_width = 4;
+    break;
+  case RAWSXP: 
+    outp = reinterpret_cast<char*>(RAW(obj));
+    type_char_width = 1;
+    break;
+  case CPLXSXP: 
+    outp = reinterpret_cast<char*>(COMPLEX(obj));
+    type_char_width = 16;
+    break;
+  default: // should never reach
+    throw exception("pointer of non-atomic object requested");
+  outp = nullptr; 
+  }
+  return outp;
+}
+
+void setBlockPointers(char* outp, std::vector<char> & block, size_t & data_offset,
+                      std::vector< std::pair<char*, size_t> > & block_pointers,
+                      size_t block_size, size_t r_array_len, size_t type_char_width, size_t i) {
+  size_t next_block = i;
+  if(block_size > data_offset) memcpy(outp,block.data()+data_offset, block_size - data_offset);
+  size_t bytes_accounted = block_size - data_offset;
+  while(bytes_accounted < (r_array_len * type_char_width) ) {
+    next_block++;
+    if(next_block >= block_pointers.size()) throw exception("reading out of file range");
+    block_pointers[next_block].first = outp + bytes_accounted;
+    size_t next_bytes = std::min(r_array_len * type_char_width - bytes_accounted, intToSize(BLOCKSIZE));
+    block_pointers[next_block].second = next_bytes;
+    bytes_accounted += next_bytes;
+  }
+  data_offset = block_size;
+  return;
+}
+
+////////////////////////////////////////////////////////////////
+// serialization functions
+////////////////////////////////////////////////////////////////
 
 struct CompressBuffer {
   size_t number_of_blocks = 0;
@@ -468,11 +757,10 @@ void writeHeader(CompressBuffer & vbuf, SEXPTYPE object_type, size_t length) {
     vbuf.append(reinterpret_cast<char*>(const_cast<unsigned char*>(&null_header)), 1);
     return;
   default:
-    if(show_warnings) {
-      // std::cerr << "note: object type " << object_type << " not supported" << std::endl;
-    }
-    vbuf.append(reinterpret_cast<char*>(const_cast<unsigned char*>(&null_header)), 1);
-    return;
+    // should never reach here
+    throw exception("something went wrong writing object header");
+    // vbuf.append(reinterpret_cast<char*>(const_cast<unsigned char*>(&null_header)), 1);
+    // return;
   }
 }
 
@@ -517,218 +805,9 @@ void writeAttributeHeader(CompressBuffer & vbuf, size_t length) {
 }
 
 
-RObject createRObject(SEXPTYPE type, size_t length) {
-  RObject obj;
-  switch(type) {
-  case VECSXP: 
-    obj = List(length);
-    // obj = Rcpp::Vector<VECSXP>(length) ;
-    break;
-  case REALSXP:
-    obj = NumericVector(length);
-    break;
-  case INTSXP:
-    obj = IntegerVector(length);
-    break;
-  case LGLSXP:
-    obj = LogicalVector(length);
-    break;
-  case RAWSXP:
-    obj = RawVector(length);
-    break;
-  case STRSXP:
-    obj = CharacterVector(length);
-    break;
-  case CPLXSXP:
-    obj = ComplexVector(length);
-    break;
-  case NILSXP:
-    obj = R_NilValue;
-  }
-  return obj;
-}
-
-
-// usage of shared_pts and weak_ptrs reference
-// https://thispointer.com/shared_ptr-binary-trees-and-the-problem-of-cyclic-references/
-// How I think this should work:
-// 1) Root node is a shared/unique ptr
-// 2) Children are added to parent node (when parent is a list), and parent node owns all children
-// 3) Recursively, root owns all children and subsequent children
-// 4) All external references should not own any node -- therefore, use raw pointer for external use outside of class
-//  Child nodes -- lists elements
-//  Attribute nodes -- attributes
-struct ObjNode {
-  size_t remaining_children = 0;
-  size_t remaining_attributes = 0;
-  ObjNode * parent;
-  std::vector< std::unique_ptr<ObjNode> > attributes;
-  std::vector< std::string > attributes_names;
-  std::vector< std::unique_ptr<ObjNode> > children; // children that need to be referenced later, not all of them
-  RObject obj;
-  ObjNode(SEXPTYPE type, size_t length, size_t attr_length=0) {
-    switch(type) {
-    case VECSXP: 
-      obj = List(length);
-      remaining_children = length;
-      break;
-    case REALSXP:
-      obj = NumericVector(length);
-      break;
-    case INTSXP:
-      obj = IntegerVector(length);
-      break;
-    case LGLSXP:
-      obj = LogicalVector(length);
-      break;
-    case RAWSXP:
-      obj = RawVector(length);
-      break;
-    case STRSXP:
-      obj = CharacterVector(length);
-      break;
-    case CPLXSXP:
-      obj = ComplexVector(length);
-      break;
-    case NILSXP:
-      obj = R_NilValue;
-    }
-    remaining_attributes = attr_length;
-  }
-  ObjNode() {}
-};
-
-RObject addNewNodeToParent(ObjNode *& parent, SEXPTYPE type, size_t length, size_t attr_length) {
-  if( parent->parent == parent ) { // root
-    std::unique_ptr<ObjNode> child = std::make_unique<ObjNode>(type, length, attr_length);
-    child->parent = parent;
-    parent->children.push_back(std::move(child));
-    parent = parent->children.back().get();
-    return parent->obj;
-  }
-  
-  // std::cout << type << " " << length << " " << attr_length << " new node \n";
-  // std::cout << TYPEOF(parent->obj) << " " << parent->remaining_children << " " << parent->remaining_attributes << " parent \n";
-  if(parent->remaining_attributes == 0 && parent->remaining_children == 0) throw exception("too many serialized objects in attributes or list");
-  
-  RObject return_obj;
-  if(parent->remaining_children > 0) { 
-    if(attr_length == 0 && (type != VECSXP || length == 0)) { // leaf node are objects with no attributes/children
-      return_obj = createRObject(type, length);
-      SET_VECTOR_ELT(parent->obj, Rf_xlength(parent->obj) - parent->remaining_children, return_obj);
-      parent->remaining_children--;
-      
-      while(parent->remaining_attributes == 0 && parent->remaining_children == 0) {
-        parent = parent->parent;
-        // std::cout << "down\n";
-        if( parent->parent == parent ) break; // root
-      }
-    } else {
-      std::unique_ptr<ObjNode> child = std::make_unique<ObjNode>(type, length, attr_length);
-      child->parent = parent;
-      return_obj = child->obj;
-      parent->children.push_back(std::move(child));
-      SET_VECTOR_ELT(parent->obj, Rf_xlength(parent->obj) - parent->remaining_children, parent->children.back()->obj);
-      parent->remaining_children--;
-      
-      parent = parent->children.back().get();
-      // std::cout << "up\n";
-      // std::cout << TYPEOF(parent->obj) << " " << parent->remaining_children << " " << parent->remaining_attributes << " parent \n";
-    }
-  } else { // if parent->remaining_attributes > 0
-    std::unique_ptr<ObjNode> child = std::make_unique<ObjNode>(type, length, attr_length);
-    child->parent = parent;
-    return_obj = child->obj;
-    parent->attributes.push_back(std::move(child));
-    parent->remaining_attributes--;
-    
-    if(attr_length > 0 || (type == VECSXP && length > 0)) {
-      parent = parent->attributes.back().get();
-      // std::cout << "up\n";
-      // std::cout << TYPEOF(parent->obj) << " " << parent->remaining_children << " " << parent->remaining_attributes << " parent \n";
-    } else {
-      while(parent->remaining_attributes == 0 && parent->remaining_children == 0) {
-        parent = parent->parent;
-        // std::cout << "down\n";
-        if( parent->parent == parent ) break; // root
-      }
-    }
-  }
-  return return_obj;
-}
-
-
-char * getObjDataPointer(RObject & obj, SEXPTYPE obj_type, size_t & type_char_width) {
-  char* outp;
-  switch(obj_type) {
-  case REALSXP: 
-    outp = reinterpret_cast<char*>(REAL(obj));
-    type_char_width = 8;
-    break;
-  case INTSXP: 
-    outp = reinterpret_cast<char*>(INTEGER(obj));
-    type_char_width = 4;
-    break;
-  case LGLSXP: 
-    outp = reinterpret_cast<char*>(LOGICAL(obj));
-    type_char_width = 4;
-    break;
-  case RAWSXP: 
-    outp = reinterpret_cast<char*>(RAW(obj));
-    type_char_width = 1;
-    break;
-  case CPLXSXP: 
-    outp = reinterpret_cast<char*>(COMPLEX(obj));
-    type_char_width = 16;
-    break;
-  default: // should never reach
-    throw exception("pointer of non-atomic object requested");
-  outp = nullptr; 
-  }
-  return outp;
-}
-
-struct String_Future {
-  RObject parentObj;
-  size_t position;
-  std::string fstring;
-  cetype_t enc;
-  String_Future(RObject pObj, size_t pos, int l, cetype_t e) {
-    parentObj = pObj;
-    position = pos;
-    fstring = std::string(l, '\0');
-    enc = e;
-  }
-  void push_string() {
-    //parentObj[position] = Rf_mkCharLenCE(fstring.data(), fstring.size(), enc);
-    SET_STRING_ELT(parentObj, position, Rf_mkCharLenCE(fstring.data(), fstring.size(), enc));
-  }
-  char* dataPtr() {
-    return &fstring[0];
-  }
-};
-
-void setBlockPointers(char* outp, std::vector<char> & block, size_t & data_offset,
-                      std::vector< std::pair<char*, size_t> > & block_pointers,
-                      size_t block_size, size_t r_array_len, size_t type_char_width, size_t i) {
-  size_t next_block = i;
-  if(block_size > data_offset) memcpy(outp,block.data()+data_offset, block_size - data_offset);
-  size_t bytes_accounted = block_size - data_offset;
-  while(bytes_accounted < (r_array_len * type_char_width) ) {
-    next_block++;
-    if(next_block >= block_pointers.size()) throw exception("reading out of file range");
-    block_pointers[next_block].first = outp + bytes_accounted;
-    size_t next_bytes = std::min(r_array_len * type_char_width - bytes_accounted, intToSize(BLOCKSIZE));
-    block_pointers[next_block].second = next_bytes;
-    bytes_accounted += next_bytes;
-  }
-  data_offset = block_size;
-  return;
-}
-
 
 void appendToVbuf(CompressBuffer & vbuf, RObject & x, bool attributes_processed = false) {
-  if(!attributes_processed) {
+  if(!attributes_processed && stypes.find(TYPEOF(x)) != stypes.end()) {
     std::vector<std::string> anames = x.attributeNames();
     if(anames.size() != 0) {
       writeAttributeHeader(vbuf, anames.size());
@@ -742,9 +821,7 @@ void appendToVbuf(CompressBuffer & vbuf, RObject & x, bool attributes_processed 
     } else {
       appendToVbuf(vbuf, x, true);
     }
-    return;
-  }
-  if(TYPEOF(x) == STRSXP) {
+  } else if(TYPEOF(x) == STRSXP) {
     size_t dl = Rf_xlength(x);
     writeHeader(vbuf, STRSXP, dl);
     CharacterVector xc = CharacterVector(x);
@@ -758,7 +835,7 @@ void appendToVbuf(CompressBuffer & vbuf, RObject & x, bool attributes_processed 
         vbuf.append(const_cast<char*>(CHAR(xi)), dl, true);
       }
     }
-  } else {
+  } else if(stypes.find(TYPEOF(x)) != stypes.end()) {
     size_t dl = Rf_xlength(x);
     writeHeader(vbuf, TYPEOF(x), dl);
     if(TYPEOF(x) == VECSXP) {
@@ -783,5 +860,15 @@ void appendToVbuf(CompressBuffer & vbuf, RObject & x, bool attributes_processed 
         break;
       }
     }
+  } else { // other non-supported SEXPTYPEs use the built in R serialization method
+    RawVector xserialized = serializeToRaw(x);
+    if(xserialized.size() < 4294967296) {
+      vbuf.append(reinterpret_cast<char*>(const_cast<unsigned char*>(&nstype_header_32)), 1);
+      vbuf_append_pod(vbuf, static_cast<uint32_t>(xserialized.size()), true );
+    } else {
+      vbuf.append(reinterpret_cast<char*>(const_cast<unsigned char*>(&nstype_header_64)), 1);
+      vbuf_append_pod(vbuf, static_cast<uint64_t>(xserialized.size()), true );
+    }
+    vbuf.append(reinterpret_cast<char*>(RAW(xserialized)), xserialized.size(), true);
   }
 }

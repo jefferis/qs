@@ -1,10 +1,10 @@
-PKG_CPPFLAGS = -I. -I../inst/include/ -I../inst/include/ -I../inst/include/common \
-	-I../inst/include/decompress -I../inst/include/compress
+PKG_CPPFLAGS = -I. -IZSTD/ -IZSTD/ -IZSTD/common \
+	-IZSTD/decompress -IZSTD/compress
 
 CXX_STD      = CXX14
 PKG_LIBS     = -L. -lzstd
 
-LIBZSTD = ../inst/include/common/debug.o ../inst/include/common/entropy_common.o ../inst/include/common/error_private.o ../inst/include/common/fse_decompress.o ../inst/include/common/pool.o ../inst/include/common/threading.o ../inst/include/common/xxhash.o ../inst/include/common/zstd_common.o ../inst/include/compress/fse_compress.o ../inst/include/compress/hist.o ../inst/include/compress/huf_compress.o ../inst/include/compress/zstd_compress.o ../inst/include/compress/zstd_double_fast.o ../inst/include/compress/zstd_fast.o ../inst/include/compress/zstd_lazy.o ../inst/include/compress/zstd_ldm.o ../inst/include/compress/zstdmt_compress.o ../inst/include/compress/zstd_opt.o ../inst/include/decompress/huf_decompress.o ../inst/include/decompress/zstd_ddict.o ../inst/include/decompress/zstd_decompress_block.o ../inst/include/decompress/zstd_decompress.o ../inst/include/dictBuilder/cover.o ../inst/include/dictBuilder/divsufsort.o ../inst/include/dictBuilder/fastcover.o ../inst/include/dictBuilder/zdict.o
+LIBZSTD = ZSTD/common/debug.o ZSTD/common/entropy_common.o ZSTD/common/error_private.o ZSTD/common/fse_decompress.o ZSTD/common/pool.o ZSTD/common/threading.o ZSTD/common/xxhash.o ZSTD/common/zstd_common.o ZSTD/compress/fse_compress.o ZSTD/compress/hist.o ZSTD/compress/huf_compress.o ZSTD/compress/zstd_compress.o ZSTD/compress/zstd_double_fast.o ZSTD/compress/zstd_fast.o ZSTD/compress/zstd_lazy.o ZSTD/compress/zstd_ldm.o ZSTD/compress/zstdmt_compress.o ZSTD/compress/zstd_opt.o ZSTD/decompress/huf_decompress.o ZSTD/decompress/zstd_ddict.o ZSTD/decompress/zstd_decompress_block.o ZSTD/decompress/zstd_decompress.o ZSTD/dictBuilder/cover.o ZSTD/dictBuilder/divsufsort.o ZSTD/dictBuilder/fastcover.o ZSTD/dictBuilder/zdict.o
 
 $(SHLIB): libzstd.a	
 
