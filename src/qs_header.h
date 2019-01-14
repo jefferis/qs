@@ -311,7 +311,7 @@ uint64_t char2Size8(std::array<char,8> a) { return *reinterpret_cast<uint64_t*>(
 ////////////////////////////////////////////////////////////////
 
 struct Data_Context {
-  std::ifstream myFile;
+  std::ifstream & myFile;
   uint64_t number_of_blocks;
   std::vector<char> zblock;
   std::vector<char> block;
@@ -319,7 +319,7 @@ struct Data_Context {
   uint64_t block_i;
   uint64_t block_size;
   std::string temp_string;
-  Data_Context(std::string file) : myFile(file, std::ios::in | std::ios::binary) {
+  Data_Context(std::ifstream & mf) : myFile(mf) {
     std::array<char,4> reserve_bits = {0,0,0,0};
     myFile.read(reserve_bits.data(),4);
     bool sys_endian = is_big_endian() ? 1 : 0;
