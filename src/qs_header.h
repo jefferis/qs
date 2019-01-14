@@ -319,8 +319,7 @@ struct Data_Context {
   uint64_t block_i;
   uint64_t block_size;
   std::string temp_string;
-  Data_Context(std::string file) {
-    myFile.open(file, std::ios::in | std::ios::binary);
+  Data_Context(std::string file) : myFile(file, std::ios::in | std::ios::binary) {
     std::array<char,4> reserve_bits = {0,0,0,0};
     myFile.read(reserve_bits.data(),4);
     bool sys_endian = is_big_endian() ? 1 : 0;
