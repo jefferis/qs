@@ -1,3 +1,24 @@
+/* qs - Quick Serialization of R Objects
+ Copyright (C) 2019-prsent Travers Ching
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+You can contact the author at:
+https://github.com/traversc/qs
+*/
+
+
 #include <Rcpp.h>
 #include <fstream>
 #include <cstring>
@@ -5,59 +26,209 @@
 #include <algorithm>
 #include <memory>
 #include <array>
-#include "RApiSerializeAPI.h"
-#include "zstd.h"
-
 #include <cstddef>
 #include <type_traits>
 #include <utility>
+#include <string>
+#include <vector>
 
-// Make unique function for c++11 (from c++14)
-// https://stackoverflow.com/questions/17902405/how-to-implement-make-unique-function-in-c11
-// this is kind of dangerous to add directly into std namespace, dont do this if compiling with c++14
-namespace std {
-  template<class T> struct _Unique_if {
-    typedef unique_ptr<T> _Single_object;
-  };
-  
-  template<class T> struct _Unique_if<T[]> {
-    typedef unique_ptr<T[]> _Unknown_bound;
-  };
-  
-  template<class T, size_t N> struct _Unique_if<T[N]> {
-    typedef void _Known_bound;
-  };
-  
-  template<class T, class... Args>
-  typename _Unique_if<T>::_Single_object
-    make_unique(Args&&... args) {
-      return unique_ptr<T>(new T(std::forward<Args>(args)...));
+#include <R.h>
+#include <Rinternals.h>
+#include <Rversion.h>
+
+#include "RApiSerializeAPI.h"
+#include "zstd.h"
+
+#include <R_ext/Rdynload.h>
+
+////////////////////////////////////////////////////////////////
+// alt rep string class
+////////////////////////////////////////////////////////////////
+
+// load alt-rep header -- see altrepisode package by Romain Francois
+#if R_VERSION < R_Version(3, 6, 0)
+#define class klass
+extern "C" {
+#include <R_ext/Altrep.h>
+}
+#undef class
+#else
+#include <R_ext/Altrep.h>
+#endif
+
+using namespace Rcpp;
+
+struct stdvec_data {
+  std::vector<std::string> strings;
+  std::vector<unsigned char> encodings;
+  R_xlen_t vec_size; 
+  stdvec_data(uint64_t N) {
+    strings = std::vector<std::string>(N);
+    encodings = std::vector<unsigned char>(N);
+    vec_size = N;
+  }
+};
+
+// instead of defining a set of free functions, we structure them
+// together in a struct
+struct stdvec_string {
+  static R_altrep_class_t class_t;
+  static SEXP Make(stdvec_data* data, bool owner){
+    SEXP xp = PROTECT(R_MakeExternalPtr(data, R_NilValue, R_NilValue));
+    if (owner) {
+      R_RegisterCFinalizerEx(xp, stdvec_string::Finalize, TRUE);
     }
+    SEXP res = R_new_altrep(class_t, xp, R_NilValue);
+    UNPROTECT(1);
+    return res;
+  }
   
-  template<class T>
-  typename _Unique_if<T>::_Unknown_bound
-    make_unique(size_t n) {
-      typedef typename remove_extent<T>::type U;
-      return unique_ptr<T>(new U[n]());
+  // finalizer for the external pointer
+  static void Finalize(SEXP xp){
+    delete static_cast<stdvec_data*>(R_ExternalPtrAddr(xp));
+  }
+  
+  // get the std::vector<string>* from the altrep object `x`
+  static stdvec_data* Ptr(SEXP vec) {
+    return static_cast<stdvec_data*>(R_ExternalPtrAddr(R_altrep_data1(vec)));
+  }
+  
+  // same, but as a reference, for convenience
+  static stdvec_data& Get(SEXP vec) {
+    return *static_cast<stdvec_data*>(R_ExternalPtrAddr(R_altrep_data1(vec)));
+  }
+  
+  // ALTREP methods -------------------
+  
+  // The length of the object
+  static R_xlen_t Length(SEXP vec){
+    return Get(vec).vec_size;
+  }
+  
+  // What gets printed when .Internal(inspect()) is used
+  static Rboolean Inspect(SEXP x, int pre, int deep, int pvec, void (*inspect_subtree)(SEXP, int, int, int)){
+    Rprintf("qs alt-rep stdvec_string (len=%d, ptr=%p)\n", Length(x), Ptr(x));
+    return TRUE;
+  }
+  
+  // ALTVEC methods ------------------
+  static SEXP Materialize(SEXP vec) {
+    SEXP data2 = R_altrep_data2(vec);
+    if (data2 != R_NilValue) {
+      return std::move(data2);
     }
+    R_xlen_t n = Length(vec);
+    data2 = PROTECT(Rf_allocVector(STRSXP, n));
+    
+    auto data1 = Get(vec);
+    for (R_xlen_t i = 0; i < n; i++) {
+      switch(data1.encodings[i]) {
+      case 1:
+        SET_STRING_ELT(data2, i, Rf_mkCharLenCE(data1.strings[i].data(), data1.strings[i].size(), CE_NATIVE) );
+        break;
+      case 2:
+        SET_STRING_ELT(data2, i, Rf_mkCharLenCE(data1.strings[i].data(), data1.strings[i].size(), CE_UTF8) );
+        break;
+      case 3:
+        SET_STRING_ELT(data2, i, Rf_mkCharLenCE(data1.strings[i].data(), data1.strings[i].size(), CE_LATIN1) );
+        break;
+      case 4:
+        SET_STRING_ELT(data2, i, Rf_mkCharLenCE(data1.strings[i].data(), data1.strings[i].size(), CE_BYTES) );
+        break;
+      default:
+        SET_STRING_ELT(data2, i, NA_STRING);
+      break;
+      }
+    }
+    
+    // free up some memory -- shrink to fit is a non-binding request
+    data1.encodings.resize(0);
+    data1.encodings.shrink_to_fit();
+    data1.strings.resize(0);
+    data1.strings.shrink_to_fit();
+    
+    R_set_altrep_data2(vec, data2);
+    UNPROTECT(1);
+    return std::move(data2);
+  }
   
-  template<class T, class... Args>
-  typename _Unique_if<T>::_Known_bound
-    make_unique(Args&&...) = delete;
+  // The start of the data, i.e. the underlying double* array from the std::vector<double>
+  // This is guaranteed to never allocate (in the R sense)
+  static const void* Dataptr_or_null(SEXP vec) {
+    SEXP data2 = R_altrep_data2(vec);
+    if (data2 == R_NilValue) return nullptr;
+    return STDVEC_DATAPTR(data2);
+  }
+  
+  // same in this case, writeable is ignored
+  static void* Dataptr(SEXP vec, Rboolean writeable) {
+    return STDVEC_DATAPTR(Materialize(vec));
+  }
+  
+  
+  // ALTSTRING methods -----------------
+  // the element at the index `i`
+  // this does not do bounds checking because that's expensive, so
+  // the caller must take care of that
+  static SEXP string_Elt(SEXP vec, R_xlen_t i){
+    auto data2 = Materialize(vec);
+    return STRING_ELT(data2, i);
+    // switch(data1.encodings[i]) {
+    // case 1:
+    //   return Rf_mkCharLenCE(data1.strings[i].data(), data1.strings[i].size(), CE_NATIVE);
+    // case 2:
+    //   return Rf_mkCharLenCE(data1.strings[i].data(), data1.strings[i].size(), CE_UTF8);
+    // case 3:
+    //   return Rf_mkCharLenCE(data1.strings[i].data(), data1.strings[i].size(), CE_LATIN1);
+    // case 4:
+    //   return Rf_mkCharLenCE(data1.strings[i].data(), data1.strings[i].size(), CE_BYTES);
+    // default:
+    //   return NA_STRING;
+    // break;
+    // }
+  }
+  
+  // -------- initialize the altrep class with the methods above
+  
+  static void Init(DllInfo* dll){
+    class_t = R_make_altstring_class("stdvec_string", "altrepisode", dll);
+    
+    // altrep
+    R_set_altrep_Length_method(class_t, Length);
+    R_set_altrep_Inspect_method(class_t, Inspect);
+    
+    // altvec
+    R_set_altvec_Dataptr_method(class_t, Dataptr);
+    R_set_altvec_Dataptr_or_null_method(class_t, Dataptr_or_null);
+    
+    // altstring
+    R_set_altstring_Elt_method(class_t, string_Elt);
+  }
+  
+};
+
+// static initialization of stdvec_double::class_t
+R_altrep_class_t stdvec_string::class_t;
+
+// Called the package is loaded (needs Rcpp 0.12.18.3)
+// [[Rcpp::init]]
+void init_stdvec_double(DllInfo* dll){
+  stdvec_string::Init(dll);
 }
 
 ////////////////////////////////////////////////////////////////
 // common utility functions and constants
 ////////////////////////////////////////////////////////////////
 
-using namespace Rcpp;
-static bool show_warnings = true;
+static bool use_alt_rep_bool = true;
+
+bool is_big_endian();
 
 // #define BLOCKSIZE 262144 // 2^20 bytes per block
 #define BLOCKRESERVE 64
 #define NA_STRING_LENGTH 4294967295 // 2^32-1 -- length used to signify NA value
 
-static size_t BLOCKSIZE = 524288;
+static uint64_t BLOCKSIZE = 524288;
 
 static const unsigned char list_header_5 = 0x20; 
 static const unsigned char list_header_8 = 0x01;
@@ -118,16 +289,16 @@ static const unsigned char nstype_header_64 = 0x1A;
 static const std::set<SEXPTYPE> stypes = {REALSXP, INTSXP, LGLSXP, STRSXP, CHARSXP, NILSXP, VECSXP, CPLXSXP, RAWSXP};
 
 // https://stackoverflow.com/questions/22346369/initialize-integer-literal-to-stdsize-t/22346540#22346540
-constexpr std::size_t intToSize ( unsigned long long n ) { return n; }
+constexpr std::uint64_t intToSize ( unsigned long long n ) { return n; }
 
-inline void writeSizeToFile8(std::ofstream & myFile, size_t x) {uint64_t x_temp = static_cast<uint64_t>(x); myFile.write(reinterpret_cast<char*>(&x_temp),8);}
-inline void writeSizeToFile4(std::ofstream & myFile, size_t x) {uint32_t x_temp = static_cast<uint32_t>(x); myFile.write(reinterpret_cast<char*>(&x_temp),4);}
-size_t readSizeFromFile4(std::ifstream & myFile) {
+inline void writeSizeToFile8(std::ofstream & myFile, uint64_t x) {uint64_t x_temp = static_cast<uint64_t>(x); myFile.write(reinterpret_cast<char*>(&x_temp),8);}
+inline void writeSizeToFile4(std::ofstream & myFile, uint64_t x) {uint32_t x_temp = static_cast<uint32_t>(x); myFile.write(reinterpret_cast<char*>(&x_temp),4);}
+uint64_t readSizeFromFile4(std::ifstream & myFile) {
   std::array<char,4> a = {0,0,0,0};
   myFile.read(a.data(),4);
   return *reinterpret_cast<uint32_t*>(a.data());
 }
-size_t readSizeFromFile8(std::ifstream & myFile) {
+uint64_t readSizeFromFile8(std::ifstream & myFile) {
   std::array<char,8> a = {0,0,0,0,0,0,0,0};
   myFile.read(a.data(),8);
   return *reinterpret_cast<uint64_t*>(a.data());
@@ -139,537 +310,460 @@ uint64_t char2Size8(std::array<char,8> a) { return *reinterpret_cast<uint64_t*>(
 // de-serialization functions
 ////////////////////////////////////////////////////////////////
 
-
-void readHeader(char* header, SEXPTYPE & object_type, size_t & r_array_len, size_t & data_offset) {
-  unsigned char h5 = reinterpret_cast<unsigned char*>(header)[data_offset] & 0xE0;
-  switch(h5) {
-  case numeric_header_5:
-    r_array_len = *reinterpret_cast<uint8_t*>(header+data_offset) & 0x1F ;
-    data_offset += 1;
-    object_type = REALSXP;
-    return;
-  case list_header_5:
-    r_array_len = *reinterpret_cast<uint8_t*>(header+data_offset) & 0x1F ;
-    data_offset += 1;
-    object_type = VECSXP;
-    return;
-  case integer_header_5:
-    r_array_len = *reinterpret_cast<uint8_t*>(header+data_offset) & 0x1F ;
-    data_offset += 1;
-    object_type = INTSXP;
-    return;
-  case logical_header_5:
-    r_array_len = *reinterpret_cast<uint8_t*>(header+data_offset) & 0x1F ;
-    data_offset += 1;
-    object_type = LGLSXP;
-    return;
-  case character_header_5:
-    r_array_len = *reinterpret_cast<uint8_t*>(header+data_offset) & 0x1F ;
-    data_offset += 1;
-    object_type = STRSXP;
-    return;
-  case attribute_header_5:
-    r_array_len = *reinterpret_cast<uint8_t*>(header+data_offset) & 0x1F ;
-    data_offset += 1;
-    object_type = ANYSXP;
-    return;
+struct Data_Context {
+  std::ifstream myFile;
+  uint64_t number_of_blocks;
+  std::vector<char> zblock;
+  std::vector<char> block;
+  uint64_t data_offset;
+  uint64_t block_i;
+  uint64_t block_size;
+  std::string temp_string;
+  Data_Context(std::string file) {
+    myFile = std::ifstream(file.c_str(), std::ios::in | std::ios::binary);
+    std::array<char,4> reserve_bits = {0,0,0,0};
+    myFile.read(reserve_bits.data(),4);
+    bool sys_endian = is_big_endian() ? 1 : 0;
+    if(reserve_bits[3] != sys_endian) throw exception("Endian of system doesn't match file endian");
+    number_of_blocks = readSizeFromFile8(myFile);
+    zblock = std::vector<char>(ZSTD_compressBound(BLOCKSIZE));
+    block = std::vector<char>(BLOCKSIZE);
+    data_offset = 0;
+    block_i = 0;
+    block_size = 0;
+    temp_string = std::string(256, '\0');
   }
-  unsigned char hd = reinterpret_cast<unsigned char*>(header)[data_offset];
-  switch(hd) {
-  case numeric_header_8:
-    r_array_len =  *reinterpret_cast<uint8_t*>(header+data_offset+1) ;
-    data_offset += 2;
-    object_type = REALSXP;
-    return;
-  case numeric_header_16:
-    r_array_len = *reinterpret_cast<uint16_t*>(header+data_offset+1) ;
-    data_offset += 3;
-    object_type = REALSXP;
-    return;
-  case numeric_header_32:
-    r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
-    data_offset += 5;
-    object_type = REALSXP;
-    return;
-  case numeric_header_64:
-    r_array_len =  *reinterpret_cast<uint64_t*>(header+data_offset+1) ;
-    data_offset += 9;
-    object_type = REALSXP;
-    return;
-  case list_header_8:
-    r_array_len =  *reinterpret_cast<uint8_t*>(header+data_offset+1) ;
-    data_offset += 2;
-    object_type = VECSXP;
-    return;
-  case list_header_16:
-    r_array_len = *reinterpret_cast<uint16_t*>(header+data_offset+1) ;
-    data_offset += 3;
-    object_type = VECSXP;
-    return;
-  case list_header_32:
-    r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
-    data_offset += 5;
-    object_type = VECSXP;
-    return;
-  case list_header_64:
-    r_array_len =  *reinterpret_cast<uint64_t*>(header+data_offset+1) ;
-    data_offset += 9;
-    object_type = VECSXP;
-    return;
-  case integer_header_8:
-    r_array_len =  *reinterpret_cast<uint8_t*>(header+data_offset+1) ;
-    data_offset += 2;
-    object_type = INTSXP;
-    return;
-  case integer_header_16:
-    r_array_len = *reinterpret_cast<uint16_t*>(header+data_offset+1) ;
-    data_offset += 3;
-    object_type = INTSXP;
-    return;
-  case integer_header_32:
-    r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
-    data_offset += 5;
-    object_type = INTSXP;
-    return;
-  case integer_header_64:
-    r_array_len =  *reinterpret_cast<uint64_t*>(header+data_offset+1) ;
-    data_offset += 9;
-    object_type = INTSXP;
-    return;
-  case logical_header_8:
-    r_array_len =  *reinterpret_cast<uint8_t*>(header+data_offset+1) ;
-    data_offset += 2;
-    object_type = LGLSXP;
-    return;
-  case logical_header_16:
-    r_array_len = *reinterpret_cast<uint16_t*>(header+data_offset+1) ;
-    data_offset += 3;
-    object_type = LGLSXP;
-    return;
-  case logical_header_32:
-    r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
-    data_offset += 5;
-    object_type = LGLSXP;
-    return;
-  case logical_header_64:
-    r_array_len =  *reinterpret_cast<uint64_t*>(header+data_offset+1) ;
-    data_offset += 9;
-    object_type = LGLSXP;
-    return;
-  case raw_header_32:
-    r_array_len = *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
-    data_offset += 5;
-    object_type = RAWSXP;
-    return;
-  case raw_header_64:
-    r_array_len =  *reinterpret_cast<uint64_t*>(header+data_offset+1) ;
-    data_offset += 9;
-    object_type = RAWSXP;
-    return;
-  case character_header_8:
-    r_array_len =  *reinterpret_cast<uint8_t*>(header+data_offset+1) ;
-    data_offset += 2;
-    object_type = STRSXP;
-    return;
-  case character_header_16:
-    r_array_len = *reinterpret_cast<uint16_t*>(header+data_offset+1) ;
-    data_offset += 3;
-    object_type = STRSXP;
-    return;
-  case character_header_32:
-    r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
-    data_offset += 5;
-    object_type = STRSXP;
-    return;
-  case character_header_64:
-    r_array_len =  *reinterpret_cast<uint64_t*>(header+data_offset+1) ;
-    data_offset += 9;
-    object_type = STRSXP;
-    return;
-  case complex_header_32:
-    r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
-    data_offset += 5;
-    object_type = CPLXSXP;
-    return;
-  case complex_header_64:
-    r_array_len =  *reinterpret_cast<uint64_t*>(header+data_offset+1) ;
-    data_offset += 9;
-    object_type = CPLXSXP;
-    return;
-  case null_header:
-    r_array_len =  0;
-    data_offset += 1;
-    object_type = NILSXP;
-    return;
-  case attribute_header_8:
-    r_array_len =  *reinterpret_cast<uint8_t*>(header+data_offset+1) ;
-    data_offset += 2;
-    object_type = ANYSXP;
-    return;
-  case attribute_header_32:
-    r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
-    data_offset += 5;
-    object_type = ANYSXP;
-    return;
-  case nstype_header_32:
-    r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
-    data_offset += 5;
-    object_type = S4SXP;
-    return;
-  case nstype_header_64:
-    r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
-    data_offset += 9;
-    object_type = S4SXP;
-    return;
-  }
-  // additional types
-  throw exception("something went wrong (reading object header)");
-}
-
-
-void readStringHeader(char* header, uint32_t & r_string_len, cetype_t & ce_enc, size_t & data_offset) {
-  unsigned char enc = reinterpret_cast<unsigned char*>(header)[data_offset] & 0xC0;
-  switch(enc) {
-  case string_enc_native:
-    ce_enc = CE_NATIVE; break;
-  case string_enc_utf8:
-    ce_enc = CE_UTF8; break;
-  case string_enc_latin1:
-    ce_enc = CE_LATIN1; break;
-  case string_enc_bytes:
-    ce_enc = CE_BYTES; break;
-  }
-  
-  if((reinterpret_cast<unsigned char*>(header)[data_offset] & 0x20) == string_header_5) {
-    r_string_len = *reinterpret_cast<uint8_t*>(header+data_offset) & 0x1F ;
-    data_offset += 1;
-    return;
-  } else {
-    unsigned char hd = reinterpret_cast<unsigned char*>(header)[data_offset] & 0x1F;
+  void readHeader(SEXPTYPE & object_type, uint64_t & r_array_len) {
+    if(data_offset >= block_size) decompress_block();
+    char* header = block.data();
+    unsigned char h5 = reinterpret_cast<unsigned char*>(header)[data_offset] & 0xE0;
+    switch(h5) {
+    case numeric_header_5:
+      r_array_len = *reinterpret_cast<uint8_t*>(header+data_offset) & 0x1F ;
+      data_offset += 1;
+      object_type = REALSXP;
+      return;
+    case list_header_5:
+      r_array_len = *reinterpret_cast<uint8_t*>(header+data_offset) & 0x1F ;
+      data_offset += 1;
+      object_type = VECSXP;
+      return;
+    case integer_header_5:
+      r_array_len = *reinterpret_cast<uint8_t*>(header+data_offset) & 0x1F ;
+      data_offset += 1;
+      object_type = INTSXP;
+      return;
+    case logical_header_5:
+      r_array_len = *reinterpret_cast<uint8_t*>(header+data_offset) & 0x1F ;
+      data_offset += 1;
+      object_type = LGLSXP;
+      return;
+    case character_header_5:
+      r_array_len = *reinterpret_cast<uint8_t*>(header+data_offset) & 0x1F ;
+      data_offset += 1;
+      object_type = STRSXP;
+      return;
+    case attribute_header_5:
+      r_array_len = *reinterpret_cast<uint8_t*>(header+data_offset) & 0x1F ;
+      data_offset += 1;
+      object_type = ANYSXP;
+      return;
+    }
+    unsigned char hd = reinterpret_cast<unsigned char*>(header)[data_offset];
     switch(hd) {
-    case string_header_8:
-      r_string_len =  *reinterpret_cast<uint8_t*>(header+data_offset+1) ;
+    case numeric_header_8:
+      r_array_len =  *reinterpret_cast<uint8_t*>(header+data_offset+1) ;
       data_offset += 2;
+      object_type = REALSXP;
       return;
-    case string_header_16:
-      r_string_len = *reinterpret_cast<uint16_t*>(header+data_offset+1) ;
+    case numeric_header_16:
+      r_array_len = *reinterpret_cast<uint16_t*>(header+data_offset+1) ;
       data_offset += 3;
+      object_type = REALSXP;
       return;
-    case string_header_32:
-      r_string_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
+    case numeric_header_32:
+      r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
       data_offset += 5;
+      object_type = REALSXP;
       return;
-    case string_header_NA:
-      r_string_len = NA_STRING_LENGTH;
+    case numeric_header_64:
+      r_array_len =  *reinterpret_cast<uint64_t*>(header+data_offset+1) ;
+      data_offset += 9;
+      object_type = REALSXP;
+      return;
+    case list_header_8:
+      r_array_len =  *reinterpret_cast<uint8_t*>(header+data_offset+1) ;
+      data_offset += 2;
+      object_type = VECSXP;
+      return;
+    case list_header_16:
+      r_array_len = *reinterpret_cast<uint16_t*>(header+data_offset+1) ;
+      data_offset += 3;
+      object_type = VECSXP;
+      return;
+    case list_header_32:
+      r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
+      data_offset += 5;
+      object_type = VECSXP;
+      return;
+    case list_header_64:
+      r_array_len =  *reinterpret_cast<uint64_t*>(header+data_offset+1) ;
+      data_offset += 9;
+      object_type = VECSXP;
+      return;
+    case integer_header_8:
+      r_array_len =  *reinterpret_cast<uint8_t*>(header+data_offset+1) ;
+      data_offset += 2;
+      object_type = INTSXP;
+      return;
+    case integer_header_16:
+      r_array_len = *reinterpret_cast<uint16_t*>(header+data_offset+1) ;
+      data_offset += 3;
+      object_type = INTSXP;
+      return;
+    case integer_header_32:
+      r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
+      data_offset += 5;
+      object_type = INTSXP;
+      return;
+    case integer_header_64:
+      r_array_len =  *reinterpret_cast<uint64_t*>(header+data_offset+1) ;
+      data_offset += 9;
+      object_type = INTSXP;
+      return;
+    case logical_header_8:
+      r_array_len =  *reinterpret_cast<uint8_t*>(header+data_offset+1) ;
+      data_offset += 2;
+      object_type = LGLSXP;
+      return;
+    case logical_header_16:
+      r_array_len = *reinterpret_cast<uint16_t*>(header+data_offset+1) ;
+      data_offset += 3;
+      object_type = LGLSXP;
+      return;
+    case logical_header_32:
+      r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
+      data_offset += 5;
+      object_type = LGLSXP;
+      return;
+    case logical_header_64:
+      r_array_len =  *reinterpret_cast<uint64_t*>(header+data_offset+1) ;
+      data_offset += 9;
+      object_type = LGLSXP;
+      return;
+    case raw_header_32:
+      r_array_len = *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
+      data_offset += 5;
+      object_type = RAWSXP;
+      return;
+    case raw_header_64:
+      r_array_len =  *reinterpret_cast<uint64_t*>(header+data_offset+1) ;
+      data_offset += 9;
+      object_type = RAWSXP;
+      return;
+    case character_header_8:
+      r_array_len =  *reinterpret_cast<uint8_t*>(header+data_offset+1) ;
+      data_offset += 2;
+      object_type = STRSXP;
+      return;
+    case character_header_16:
+      r_array_len = *reinterpret_cast<uint16_t*>(header+data_offset+1) ;
+      data_offset += 3;
+      object_type = STRSXP;
+      return;
+    case character_header_32:
+      r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
+      data_offset += 5;
+      object_type = STRSXP;
+      return;
+    case character_header_64:
+      r_array_len =  *reinterpret_cast<uint64_t*>(header+data_offset+1) ;
+      data_offset += 9;
+      object_type = STRSXP;
+      return;
+    case complex_header_32:
+      r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
+      data_offset += 5;
+      object_type = CPLXSXP;
+      return;
+    case complex_header_64:
+      r_array_len =  *reinterpret_cast<uint64_t*>(header+data_offset+1) ;
+      data_offset += 9;
+      object_type = CPLXSXP;
+      return;
+    case null_header:
+      r_array_len =  0;
+      data_offset += 1;
+      object_type = NILSXP;
+      return;
+    case attribute_header_8:
+      r_array_len =  *reinterpret_cast<uint8_t*>(header+data_offset+1) ;
+      data_offset += 2;
+      object_type = ANYSXP;
+      return;
+    case attribute_header_32:
+      r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
+      data_offset += 5;
+      object_type = ANYSXP;
+      return;
+    case nstype_header_32:
+      r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
+      data_offset += 5;
+      object_type = S4SXP;
+      return;
+    case nstype_header_64:
+      r_array_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
+      data_offset += 9;
+      object_type = S4SXP;
+      return;
+    }
+    // additional types
+    throw exception("something went wrong (reading object header)");
+  }
+  void readStringHeader(uint32_t & r_string_len, cetype_t & ce_enc) {
+    if(data_offset >= block_size) decompress_block();
+    char* header = block.data();
+    unsigned char enc = reinterpret_cast<unsigned char*>(header)[data_offset] & 0xC0;
+    switch(enc) {
+    case string_enc_native:
+      ce_enc = CE_NATIVE; break;
+    case string_enc_utf8:
+      ce_enc = CE_UTF8; break;
+    case string_enc_latin1:
+      ce_enc = CE_LATIN1; break;
+    case string_enc_bytes:
+      ce_enc = CE_BYTES; break;
+    }
+    
+    if((reinterpret_cast<unsigned char*>(header)[data_offset] & 0x20) == string_header_5) {
+      r_string_len = *reinterpret_cast<uint8_t*>(header+data_offset) & 0x1F ;
       data_offset += 1;
       return;
-    }
-  } 
-  throw exception("something went wrong (reading string header)");
-}
-
-RObject createRObject(SEXPTYPE type, size_t length) {
-  RObject obj;
-  switch(type) {
-  case VECSXP: 
-    obj = List(length);
-    // obj = Rcpp::Vector<VECSXP>(length) ;
-    break;
-  case REALSXP:
-    obj = NumericVector(length);
-    break;
-  case INTSXP:
-    obj = IntegerVector(length);
-    break;
-  case LGLSXP:
-    obj = LogicalVector(length);
-    break;
-  case RAWSXP:
-    obj = RawVector(length);
-    break;
-  case STRSXP:
-    obj = CharacterVector(length);
-    break;
-  case CPLXSXP:
-    obj = ComplexVector(length);
-    break;
-  case NILSXP:
-    obj = R_NilValue;
+    } else {
+      unsigned char hd = reinterpret_cast<unsigned char*>(header)[data_offset] & 0x1F;
+      switch(hd) {
+      case string_header_8:
+        r_string_len =  *reinterpret_cast<uint8_t*>(header+data_offset+1) ;
+        data_offset += 2;
+        return;
+      case string_header_16:
+        r_string_len = *reinterpret_cast<uint16_t*>(header+data_offset+1) ;
+        data_offset += 3;
+        return;
+      case string_header_32:
+        r_string_len =  *reinterpret_cast<uint32_t*>(header+data_offset+1) ;
+        data_offset += 5;
+        return;
+      case string_header_NA:
+        r_string_len = NA_STRING_LENGTH;
+        data_offset += 1;
+        return;
+      }
+    } 
+    throw exception("something went wrong (reading string header)");
   }
-  return obj;
-}
-
-
-// usage of shared_pts and weak_ptrs reference
-// https://thispointer.com/shared_ptr-binary-trees-and-the-problem-of-cyclic-references/
-// How I think this should work:
-// 1) Root node is a shared/unique ptr
-// 2) Children are added to parent node (when parent is a list), and parent node owns all children
-// 3) Recursively, root owns all children and subsequent children
-// 4) All external references should not own any node -- therefore, use raw pointer for external use outside of class
-//  Child nodes -- lists elements
-//  Attribute nodes -- attributes
-struct ObjNode {
-  size_t remaining_children = 0;
-  size_t remaining_attributes = 0;
-  ObjNode * parent;
-  std::vector< std::unique_ptr<ObjNode> > attributes;
-  std::vector< std::string > attributes_names;
-  std::vector< std::unique_ptr<ObjNode> > children; // children that need to be referenced later, not all of them
-  RObject obj;
-  ObjNode(SEXPTYPE type, size_t length, size_t attr_length=0) {
-    switch(type) {
+  void decompress_direct(char* bpointer) {
+    block_i++;
+    std::array<char, 4> zsize_ar = {0,0,0,0};
+    myFile.read(zsize_ar.data(), 4);
+    uint64_t zsize = *reinterpret_cast<uint32_t*>(zsize_ar.data());
+    myFile.read(zblock.data(), zsize);
+    block_size = ZSTD_decompress(bpointer, BLOCKSIZE, zblock.data(), zsize);
+  }
+  void decompress_block() {
+    block_i++;
+    std::array<char, 4> zsize_ar = {0,0,0,0};
+    myFile.read(zsize_ar.data(), 4);
+    uint64_t zsize = *reinterpret_cast<uint32_t*>(zsize_ar.data());
+    myFile.read(zblock.data(), zsize);
+    block_size = ZSTD_decompress(block.data(), BLOCKSIZE, zblock.data(), zsize);
+    data_offset = 0;
+  }
+  void getBlockData(char* outp, uint64_t data_size) {
+    if(data_size <= block_size - data_offset) {
+      memcpy(outp, block.data()+data_offset, data_size);
+      data_offset += data_size;
+    } else {
+      uint64_t bytes_accounted = block_size - data_offset;
+      memcpy(outp, block.data()+data_offset, bytes_accounted);
+      while(bytes_accounted < data_size) {
+        if(data_size - bytes_accounted >= BLOCKSIZE) {
+          decompress_direct(outp+bytes_accounted);
+          bytes_accounted += BLOCKSIZE;
+        } else {
+          decompress_block();
+          memcpy(outp + bytes_accounted, block.data(), data_size - bytes_accounted);
+          data_offset = data_size - bytes_accounted;
+          bytes_accounted += data_offset;
+        }
+      }
+    }
+  }
+  SEXP processBlock() {
+    SEXPTYPE obj_type;
+    uint64_t r_array_len;
+    readHeader(obj_type, r_array_len);
+    uint64_t number_of_attributes;
+    if(obj_type == ANYSXP) {
+      number_of_attributes = r_array_len;
+      readHeader(obj_type, r_array_len);
+    } else {
+      number_of_attributes = 0;
+    }
+    SEXP obj;
+    switch(obj_type) {
     case VECSXP: 
-      obj = List(length);
-      remaining_children = length;
+      obj = PROTECT(Rf_allocVector(VECSXP, r_array_len));
+      for(uint64_t i=0; i<r_array_len; i++) {
+        SET_VECTOR_ELT(obj, i, processBlock());
+      }
       break;
     case REALSXP:
-      obj = NumericVector(length);
+      obj = PROTECT(Rf_allocVector(REALSXP, r_array_len));
+      if(r_array_len > 0) getBlockData(reinterpret_cast<char*>(REAL(obj)), r_array_len*8);
       break;
     case INTSXP:
-      obj = IntegerVector(length);
+      obj = PROTECT(Rf_allocVector(INTSXP, r_array_len));
+      if(r_array_len > 0) getBlockData(reinterpret_cast<char*>(INTEGER(obj)), r_array_len*4);
       break;
     case LGLSXP:
-      obj = LogicalVector(length);
+      obj = PROTECT(Rf_allocVector(LGLSXP, r_array_len));
+      if(r_array_len > 0) getBlockData(reinterpret_cast<char*>(LOGICAL(obj)), r_array_len*4);
       break;
     case RAWSXP:
-      obj = RawVector(length);
+      obj = PROTECT(Rf_allocVector(RAWSXP, r_array_len));
+      if(r_array_len > 0) getBlockData(reinterpret_cast<char*>(RAW(obj)), r_array_len);
       break;
     case STRSXP:
-      obj = CharacterVector(length);
+      if(use_alt_rep_bool) {
+        auto ret = new stdvec_data(r_array_len);
+        for(uint64_t i=0; i < r_array_len; i++) {
+          uint32_t r_string_len;
+          cetype_t string_encoding = CE_NATIVE;
+          readStringHeader(r_string_len, string_encoding);
+          if(r_string_len == NA_STRING_LENGTH) {
+            ret->encodings[i] = 5;
+          } else if(r_string_len == 0) {
+            ret->encodings[i] = 1;
+            ret->strings[i] = "";
+          } else {
+            temp_string.resize(r_string_len);
+            getBlockData(&temp_string[0], r_string_len);
+            switch(string_encoding) {
+            case CE_NATIVE:
+              ret->encodings[i] = 1;
+              ret->strings[i] = temp_string;
+              break;
+            case CE_UTF8:
+              ret->encodings[i] = 2;
+              ret->strings[i] = temp_string;
+              break;
+            case CE_LATIN1:
+              ret->encodings[i] = 3;
+              ret->strings[i] = temp_string;
+              break;
+            case CE_BYTES:
+              ret->encodings[i] = 4;
+              ret->strings[i] = temp_string;
+              break;
+            default:
+              ret->encodings[i] = 5;
+            break;
+            }
+          }
+        }
+        obj = PROTECT(stdvec_string::Make(ret, true));
+      } else {
+        obj = obj = PROTECT(Rf_allocVector(STRSXP, r_array_len));
+        for(uint64_t i=0; i<r_array_len; i++) {
+          uint32_t r_string_len;
+          cetype_t string_encoding = CE_NATIVE;
+          readStringHeader(r_string_len, string_encoding);
+          if(r_string_len == NA_STRING_LENGTH) {
+            SET_STRING_ELT(obj, i, NA_STRING);
+          } else if(r_string_len == 0) {
+            SET_STRING_ELT(obj, i, Rf_mkCharLen("", 0));
+          } else if(r_string_len > 0) {
+            if(r_string_len > temp_string.size()) {
+              temp_string.resize(r_string_len);
+            }
+            getBlockData(&temp_string[0], r_string_len);
+            SET_STRING_ELT(obj, i, Rf_mkCharLenCE(temp_string.data(), r_string_len, string_encoding));
+          }
+        }
+      }
       break;
     case CPLXSXP:
-      obj = ComplexVector(length);
+      obj = PROTECT(Rf_allocVector(CPLXSXP, r_array_len));
+      if(r_array_len > 0) getBlockData(reinterpret_cast<char*>(COMPLEX(obj)), r_array_len*16);
       break;
     case NILSXP:
-      obj = R_NilValue;
+      return R_NilValue;
+    case S4SXP:
+    {
+      SEXP obj_data = PROTECT(Rf_allocVector(RAWSXP, r_array_len));
+      getBlockData(reinterpret_cast<char*>(RAW(obj_data)), r_array_len);
+      obj = PROTECT(unserializeFromRaw(obj_data));
+      UNPROTECT(2);
+      return obj;
     }
-    remaining_attributes = attr_length;
-  }
-  ObjNode() {}
-};
-
-
-struct String_Future {
-  RObject parentObj;
-  size_t position;
-  std::string fstring;
-  cetype_t enc;
-  String_Future(RObject pObj, size_t pos, int l, cetype_t e) {
-    parentObj = pObj;
-    position = pos;
-    fstring = std::string(l, '\0');
-    enc = e;
-  }
-  void push_string() {
-    //parentObj[position] = Rf_mkCharLenCE(fstring.data(), fstring.size(), enc);
-    SET_STRING_ELT(parentObj, position, Rf_mkCharLenCE(fstring.data(), fstring.size(), enc));
-  }
-  char* dataPtr() {
-    return &fstring[0];
-  }
-};
-
-
-struct NsObj_Future {
-  ObjNode * node;
-  size_t position;
-  bool is_attribute;
-  RawVector data;
-  NsObj_Future(ObjNode * no, size_t data_len, size_t pos, bool is_att) {
-    node = no;
-    position = pos;
-    is_attribute = is_att;
-    data = RawVector(data_len);
-  }
-  void push() {
-    node->obj = unserializeFromRaw(data);
-    if(!is_attribute && node->parent->parent != node->parent) { // not root and not attribute, then insert to list
-      SET_VECTOR_ELT(node->parent->obj, position, node->obj);
     }
-  }
-  char* dataPtr() {
-    return reinterpret_cast<char*>(RAW(data));
-  }
-};
-
-
-RObject addNewNodeToParent(ObjNode *& parent, SEXPTYPE type, size_t length, size_t attr_length) {
-  if( parent->parent == parent ) { // root
-    std::unique_ptr<ObjNode> child = std::make_unique<ObjNode>(type, length, attr_length);
-    child->parent = parent;
-    parent->children.push_back(std::move(child));
-    parent = parent->children.back().get();
-    return parent->obj;
-  }
-  
-  // std::cout << type << " " << length << " " << attr_length << " new node \n";
-  // std::cout << TYPEOF(parent->obj) << " " << parent->remaining_children << " " << parent->remaining_attributes << " parent \n";
-  if(parent->remaining_attributes == 0 && parent->remaining_children == 0) throw exception("too many serialized objects in attributes or list");
-  
-  RObject return_obj;
-  if(parent->remaining_children > 0) { 
-    if(attr_length == 0 && (type != VECSXP || length == 0)) { // leaf node are objects with no attributes/children
-      return_obj = createRObject(type, length);
-      SET_VECTOR_ELT(parent->obj, Rf_xlength(parent->obj) - parent->remaining_children, return_obj);
-      parent->remaining_children--;
-      
-      while(parent->remaining_attributes == 0 && parent->remaining_children == 0) {
-        parent = parent->parent;
-        // std::cout << "down\n";
-        if( parent->parent == parent ) break; // root
-      }
-    } else {
-      std::unique_ptr<ObjNode> child = std::make_unique<ObjNode>(type, length, attr_length);
-      child->parent = parent;
-      return_obj = child->obj;
-      parent->children.push_back(std::move(child));
-      SET_VECTOR_ELT(parent->obj, Rf_xlength(parent->obj) - parent->remaining_children, parent->children.back()->obj);
-      parent->remaining_children--;
-      
-      parent = parent->children.back().get();
-      // std::cout << "up\n";
-      // std::cout << TYPEOF(parent->obj) << " " << parent->remaining_children << " " << parent->remaining_attributes << " parent \n";
-    }
-  } else { // if parent->remaining_attributes > 0
-    std::unique_ptr<ObjNode> child = std::make_unique<ObjNode>(type, length, attr_length);
-    child->parent = parent;
-    return_obj = child->obj;
-    parent->attributes.push_back(std::move(child));
-    parent->remaining_attributes--;
-    
-    if(attr_length > 0 || (type == VECSXP && length > 0)) {
-      parent = parent->attributes.back().get();
-      // std::cout << "up\n";
-      // std::cout << TYPEOF(parent->obj) << " " << parent->remaining_children << " " << parent->remaining_attributes << " parent \n";
-    } else {
-      while(parent->remaining_attributes == 0 && parent->remaining_children == 0) {
-        parent = parent->parent;
-        // std::cout << "down\n";
-        if( parent->parent == parent ) break; // root
+    if(number_of_attributes > 0) {
+      for(uint64_t i=0; i<number_of_attributes; i++) {
+        uint32_t r_string_len;
+        cetype_t string_encoding;
+        readStringHeader(r_string_len, string_encoding);
+        if(r_string_len > temp_string.size()) {
+          temp_string.resize(r_string_len);
+        }
+        std::string attribute_name;
+        attribute_name.resize(r_string_len);
+        getBlockData(&attribute_name[0], r_string_len);
+        Rf_setAttrib(obj, Rf_install(attribute_name.data()), processBlock());
       }
     }
+    UNPROTECT(1);
+    return std::move(obj);
   }
-  return return_obj;
-}
+};
 
-
-NsObj_Future addNewNsNodeToParent(ObjNode *& parent, size_t length) {
-  std::unique_ptr<ObjNode> child = std::make_unique<ObjNode>();
-  child->parent = parent;
-  child->obj = R_NilValue; // placeholder
-  if( parent->parent == parent ) { // root
-    parent->children.push_back(std::move(child));
-    return NsObj_Future(parent->children.back().get(), length, 0, false);
-  }
-  
-  if(parent->remaining_attributes == 0 && parent->remaining_children == 0) throw exception("too many serialized objects in attributes or list");
-  if(parent->remaining_children > 0) { 
-    parent->children.push_back(std::move(child));
-    NsObj_Future return_obj = NsObj_Future(parent->children.back().get(), length, Rf_xlength(parent->obj) - parent->remaining_children, false);
-    parent->remaining_children--;
-    while(parent->remaining_attributes == 0 && parent->remaining_children == 0) {
-      parent = parent->parent;
-      if( parent->parent == parent ) break; // root
-    }
-    return return_obj;
-  } else { // if parent->remaining_attributes > 0
-    parent->attributes.push_back(std::move(child));
-    NsObj_Future return_obj = NsObj_Future(parent->attributes.back().get(), length, 0, true);
-    parent->remaining_attributes--;
-    while(parent->remaining_attributes == 0 && parent->remaining_children == 0) {
-      parent = parent->parent;
-      if( parent->parent == parent ) break; // root
-    }
-    return return_obj;
-  }
-}
-
-
-char * getObjDataPointer(RObject & obj, SEXPTYPE obj_type, size_t & type_char_width) {
-  char* outp;
-  switch(obj_type) {
-  case REALSXP: 
-    outp = reinterpret_cast<char*>(REAL(obj));
-    type_char_width = 8;
-    break;
-  case INTSXP: 
-    outp = reinterpret_cast<char*>(INTEGER(obj));
-    type_char_width = 4;
-    break;
-  case LGLSXP: 
-    outp = reinterpret_cast<char*>(LOGICAL(obj));
-    type_char_width = 4;
-    break;
-  case RAWSXP: 
-    outp = reinterpret_cast<char*>(RAW(obj));
-    type_char_width = 1;
-    break;
-  case CPLXSXP: 
-    outp = reinterpret_cast<char*>(COMPLEX(obj));
-    type_char_width = 16;
-    break;
-  default: // should never reach
-    throw exception("pointer of non-atomic object requested");
-  outp = nullptr; 
-  }
-  return outp;
-}
-
-void setBlockPointers(char* outp, std::vector<char> & block, size_t & data_offset,
-                      std::vector< std::pair<char*, size_t> > & block_pointers,
-                      size_t block_size, size_t r_array_len, size_t type_char_width, size_t i) {
-  size_t next_block = i;
-  if(block_size > data_offset) memcpy(outp,block.data()+data_offset, block_size - data_offset);
-  size_t bytes_accounted = block_size - data_offset;
-  while(bytes_accounted < (r_array_len * type_char_width) ) {
-    next_block++;
-    if(next_block >= block_pointers.size()) throw exception("reading out of file range");
-    block_pointers[next_block].first = outp + bytes_accounted;
-    size_t next_bytes = std::min(r_array_len * type_char_width - bytes_accounted, intToSize(BLOCKSIZE));
-    block_pointers[next_block].second = next_bytes;
-    bytes_accounted += next_bytes;
-  }
-  data_offset = block_size;
-  return;
-}
 
 ////////////////////////////////////////////////////////////////
 // serialization functions
 ////////////////////////////////////////////////////////////////
 
 struct CompressBuffer {
-  size_t number_of_blocks = 0;
+  uint64_t number_of_blocks = 0;
   std::vector<char> block = std::vector<char>(BLOCKSIZE);
   std::vector<char> zblock = std::vector<char>(ZSTD_compressBound(BLOCKSIZE));
-  size_t current_blocksize=0;
+  uint64_t current_blocksize=0;
   std::ofstream & myFile;
-  size_t compress_level;
+  uint64_t compress_level;
   CompressBuffer(std::ofstream & f, int cl) : myFile(f), compress_level(cl) {}
   void flush() {
     if(current_blocksize > 0) {
-      size_t zsize = ZSTD_compress(zblock.data(), zblock.size(), block.data(), current_blocksize, compress_level);
+      uint64_t zsize = ZSTD_compress(zblock.data(), zblock.size(), block.data(), current_blocksize, compress_level);
       writeSizeToFile4(myFile, zsize);
       myFile.write(zblock.data(), zsize);
       current_blocksize = 0;
       number_of_blocks++;
     }
   }
-  void append(char* data, size_t len, bool contiguous = false) {
-    size_t current_pointer_consumed = 0;
+  void append(char* data, uint64_t len, bool contiguous = false) {
+    uint64_t current_pointer_consumed = 0;
     while(current_pointer_consumed < len) {
       if( (current_blocksize == BLOCKSIZE) || ((BLOCKSIZE - current_blocksize < BLOCKRESERVE) && !contiguous) ) {
         flush();
       }
       if(current_blocksize == 0 && len - current_pointer_consumed >= BLOCKSIZE) {
-        size_t zsize = ZSTD_compress(zblock.data(), zblock.size(), data + current_pointer_consumed, BLOCKSIZE, compress_level);
+        uint64_t zsize = ZSTD_compress(zblock.data(), zblock.size(), data + current_pointer_consumed, BLOCKSIZE, compress_level);
         writeSizeToFile4(myFile, zsize);
         myFile.write(zblock.data(), zsize);
         current_pointer_consumed += BLOCKSIZE;
         number_of_blocks++;
       } else {
-        size_t remaining_pointer_available = len - current_pointer_consumed;
-        size_t add_length = remaining_pointer_available < (BLOCKSIZE - current_blocksize) ? remaining_pointer_available : BLOCKSIZE-current_blocksize;
+        uint64_t remaining_pointer_available = len - current_pointer_consumed;
+        uint64_t add_length = remaining_pointer_available < (BLOCKSIZE - current_blocksize) ? remaining_pointer_available : BLOCKSIZE-current_blocksize;
         memcpy(block.data() + current_blocksize, data + current_pointer_consumed, add_length);
         current_blocksize += add_length;
         current_pointer_consumed += add_length;
@@ -685,7 +779,7 @@ inline void vbuf_append_pod(CompressBuffer & vbuf, POD pod, bool contiguous = fa
 }
 
 // write header to vbuf
-void writeHeader(CompressBuffer & vbuf, SEXPTYPE object_type, size_t length) {
+void writeHeader(CompressBuffer & vbuf, SEXPTYPE object_type, uint64_t length) {
   switch(object_type) {
   case REALSXP:
     if(length < 32) {
@@ -801,7 +895,7 @@ void writeHeader(CompressBuffer & vbuf, SEXPTYPE object_type, size_t length) {
   }
 }
 
-void writeStringHeader(CompressBuffer & vbuf, size_t length, cetype_t ce_enc) {
+void writeStringHeader(CompressBuffer & vbuf, uint64_t length, cetype_t ce_enc) {
   unsigned char enc;
   switch(ce_enc) {
   case CE_NATIVE:
@@ -829,7 +923,7 @@ void writeStringHeader(CompressBuffer & vbuf, size_t length, cetype_t ce_enc) {
   }
 }
 
-void writeAttributeHeader(CompressBuffer & vbuf, size_t length) {
+void writeAttributeHeader(CompressBuffer & vbuf, uint64_t length) {
   if(length < 32) {
     vbuf_append_pod(vbuf, static_cast<unsigned char>( attribute_header_5 | static_cast<unsigned char>(length) ) );
   } else if(length < 256) {
@@ -849,7 +943,7 @@ void appendToVbuf(CompressBuffer & vbuf, RObject & x, bool attributes_processed 
     if(anames.size() != 0) {
       writeAttributeHeader(vbuf, anames.size());
       appendToVbuf(vbuf, x, true);
-      for(size_t i=0; i<anames.size(); i++) {
+      for(uint64_t i=0; i<anames.size(); i++) {
         writeStringHeader(vbuf, anames[i].size(),CE_NATIVE);
         vbuf.append(&anames[i][0], anames[i].size(), true);
         RObject xa = x.attr(anames[i]);
@@ -859,25 +953,25 @@ void appendToVbuf(CompressBuffer & vbuf, RObject & x, bool attributes_processed 
       appendToVbuf(vbuf, x, true);
     }
   } else if(TYPEOF(x) == STRSXP) {
-    size_t dl = Rf_xlength(x);
+    uint64_t dl = Rf_xlength(x);
     writeHeader(vbuf, STRSXP, dl);
     CharacterVector xc = CharacterVector(x);
-    for(size_t i=0; i<dl; i++) {
+    for(uint64_t i=0; i<dl; i++) {
       SEXP xi = xc[i];
       if(xi == NA_STRING) {
         vbuf.append(reinterpret_cast<char*>(const_cast<unsigned char*>(&string_header_NA)), 1);
       } else {
-        size_t dl = LENGTH(xi);
+        uint64_t dl = LENGTH(xi);
         writeStringHeader(vbuf, dl, Rf_getCharCE(xi));
         vbuf.append(const_cast<char*>(CHAR(xi)), dl, true);
       }
     }
   } else if(stypes.find(TYPEOF(x)) != stypes.end()) {
-    size_t dl = Rf_xlength(x);
+    uint64_t dl = Rf_xlength(x);
     writeHeader(vbuf, TYPEOF(x), dl);
     if(TYPEOF(x) == VECSXP) {
       List xl = List(x);
-      for(size_t i=0; i<dl; i++) {
+      for(uint64_t i=0; i<dl; i++) {
         RObject xi = xl[i];
         appendToVbuf(vbuf, xi);
       }
