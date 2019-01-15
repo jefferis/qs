@@ -673,7 +673,7 @@ struct Data_Context {
         }
         obj = PROTECT(stdvec_string::Make(ret, true));
       } else {
-        obj = obj = PROTECT(Rf_allocVector(STRSXP, r_array_len));
+        obj = PROTECT(Rf_allocVector(STRSXP, r_array_len));
         for(uint64_t i=0; i<r_array_len; i++) {
           uint32_t r_string_len;
           cetype_t string_encoding = CE_NATIVE;
@@ -696,8 +696,6 @@ struct Data_Context {
       obj = PROTECT(Rf_allocVector(CPLXSXP, r_array_len));
       if(r_array_len > 0) getBlockData(reinterpret_cast<char*>(COMPLEX(obj)), r_array_len*16);
       break;
-    case NILSXP:
-      return R_NilValue;
     case S4SXP:
     {
       SEXP obj_data = PROTECT(Rf_allocVector(RAWSXP, r_array_len));
@@ -706,6 +704,9 @@ struct Data_Context {
       UNPROTECT(2);
       return obj;
     }
+    default: // also NILSXP
+      obj = R_NilValue;
+      return obj;
     }
     if(number_of_attributes > 0) {
       for(uint64_t i=0; i<number_of_attributes; i++) {
