@@ -4,10 +4,10 @@
 \alias{qs_set_blocksize}
 \title{Set Blocksize}
 \usage{
-qs_set_blocksize(100000)
+qs_set_blocksize(s)
 }
 \arguments{
-\item{blocksize}{The blocksize in bytes}
+\item{s}{The blocksize in bytes}
 }
 \description{
 Changes the compression blocksize.  Default: 2^19 (512 Kb).  Mostly for testing purposes, don't change otherwise.  
