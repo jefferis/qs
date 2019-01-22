@@ -3,6 +3,9 @@
 \name{convertToAlt}
 \alias{convertToAlt}
 \title{Convert character vector to alt-rep}
+\usage{
+convertToAlt(x)
+}
 \arguments{
 \item{x}{The character vector}
 }
@@ -10,5 +13,5 @@
 The character vector in alt-rep form
 }
 \description{
-A function for generating a alt rep object from a character vector, for testing purposes.
+A function for generating a alt-rep object from a character vector, for testing purposes.
 }

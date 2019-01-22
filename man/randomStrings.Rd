@@ -3,6 +3,9 @@
 \name{randomStrings}
 \alias{randomStrings}
 \title{Generate random strings}
+\usage{
+randomStrings(N, string_size)
+}
 \arguments{
 \item{N}{The number of random strings to generate}
 

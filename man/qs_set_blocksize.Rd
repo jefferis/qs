@@ -3,10 +3,13 @@
 \name{qs_set_blocksize}
 \alias{qs_set_blocksize}
 \title{Set Blocksize}
+\usage{
+qs_set_blocksize(100000)
+}
 \arguments{
 \item{blocksize}{The blocksize in bytes}
 }
 \description{
 Changes the compression blocksize.  Default: 2^19 (512 Kb).  Mostly for testing purposes, don't change otherwise.  
-If you change the blocksize, you'll need to set it every time you load an object.
+If you change the blocksize, you'll need to set it every time you load an object otherwise it will break.
 }

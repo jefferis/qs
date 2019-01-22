@@ -3,9 +3,12 @@
 \name{qs_use_alt_rep}
 \alias{qs_use_alt_rep}
 \title{Use alt-rep}
+\usage{
+qs_use_alt_rep(s)
+}
 \arguments{
 \item{s}{A boolean to determine whether `qread` uses alt-rep.  Default: TRUE.}
 }
 \description{
-Changes whether qread uses the alt-rep system
+Changes whether qread uses the alt-rep system.  If you experience issues or run out of memory, set to FALSE.
 }
