@@ -288,9 +288,6 @@ static const unsigned char nstype_header_64 = 0x1A;
 
 static const std::set<SEXPTYPE> stypes = {REALSXP, INTSXP, LGLSXP, STRSXP, CHARSXP, NILSXP, VECSXP, CPLXSXP, RAWSXP};
 
-// https://stackoverflow.com/questions/22346369/initialize-integer-literal-to-stdsize-t/22346540#22346540
-constexpr std::uint64_t intToSize ( unsigned long long n ) { return n; }
-
 inline void writeSizeToFile8(std::ofstream & myFile, uint64_t x) {uint64_t x_temp = static_cast<uint64_t>(x); myFile.write(reinterpret_cast<char*>(&x_temp),8);}
 inline void writeSizeToFile4(std::ofstream & myFile, uint64_t x) {uint32_t x_temp = static_cast<uint32_t>(x); myFile.write(reinterpret_cast<char*>(&x_temp),4);}
 uint64_t readSizeFromFile4(std::ifstream & myFile) {

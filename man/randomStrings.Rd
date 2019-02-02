@@ -17,3 +17,7 @@ A character vector of random alpha-numeric strings.
 \description{
 A function for generating a character vector of random strings, for testing purposes.
 }
+\examples{
+randomStrings(N=10, string_size=20) # returns 10 alphanumeric strings of length 20
+randomStrings(N=100, string_size=200) # returns 100 alphanumeric strings of length 200
+}

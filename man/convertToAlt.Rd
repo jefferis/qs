@@ -13,5 +13,9 @@ convertToAlt(x)
 The character vector in alt-rep form
 }
 \description{
-A function for generating a alt-rep object from a character vector, for testing purposes.
+A function for generating a alt-rep object from a character vector, for users to experiment with the alt-rep system.
+}
+\examples{
+xalt <- convertToAlt(randomStrings(N=10, string_size=20))
+xalt2 <- convertToAlt(c("a", "b", "c"))
 }

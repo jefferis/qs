@@ -12,3 +12,11 @@ qs_use_alt_rep(s)
 \description{
 Changes whether qread uses the alt-rep system.  If you experience issues or run out of memory, set to FALSE.
 }
+\examples{
+myfile <- tempfile()
+qs_use_alt_rep(FALSE)
+x <- randomStrings(1e3)
+qsave(x, myfile)
+x2 <- qread(myfile) # qs will no longer use alt-rep strings to load in character vector data
+identical(x, x2) # returns true
+}
