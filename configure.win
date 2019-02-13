@@ -1,3 +1,0 @@
-#!/bin/sh
-
-echo "Windows: compiling zstd from source"
