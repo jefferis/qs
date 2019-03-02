@@ -80,7 +80,7 @@ random_object_generator <- function(N) { # additional input: global obj_size, ma
 }
 
 
-test_points <- c(2^5-1, 2^5+1, 2^5,2^8-1, 2^8+1,2^8,2^16-1, 2^16+1, 2^16, 1e6)
+test_points <- c(0,1,2,4,8,2^5-1, 2^5+1, 2^5,2^8-1, 2^8+1,2^8,2^16-1, 2^16+1, 2^16, 1e6)
 
 ################################################################################################
 
@@ -91,7 +91,7 @@ for(tp in test_points) {
     x1 <- rep(letters, length.out=tp) %>% paste(collapse="")
     x1 <- c(NA, "", x1)
     time[i] <- Sys.time()
-    qsave(x1, file="/tmp/test.z", 3)
+    qsave(x1, file="/tmp/test.z", -1, preset = "custom", shuffle_control = sample(0:15,1))
     z <- qread(file="/tmp/test.z")
     stopifnot(identical(z, x1))
     time[i] <- Sys.time() - time[i]
@@ -108,7 +108,7 @@ for(tp in test_points) {
     x1 <- splitstr(x1, cuts)
     x1 <- c(NA, "", x1)
     time[i] <- Sys.time()
-    qsave(x1, file="/tmp/test.z", 3)
+    qsave(x1, file="/tmp/test.z", -1, preset = "custom", shuffle_control = sample(0:15,1))
     z <- qread(file="/tmp/test.z")
     stopifnot(identical(z, x1))
     time[i] <- Sys.time() - time[i]
@@ -123,7 +123,7 @@ for(tp in test_points) {
     x1 <- sample(1:tp, replace=T)
     x1 <- c(NA, x1)
     time[i] <- Sys.time()
-    qsave(x1, file="/tmp/test.z", 3)
+    qsave(x1, file="/tmp/test.z", -1, preset = "custom", shuffle_control = sample(0:15,1))
     z <- qread(file="/tmp/test.z")
     stopifnot(identical(z, x1))
     time[i] <- Sys.time() - time[i]
@@ -138,7 +138,7 @@ for(tp in test_points) {
     x1 <- rnorm(tp)
     x1 <- c(NA, x1)
     time[i] <- Sys.time()
-    qsave(x1, file="/tmp/test.z", 3)
+    qsave(x1, file="/tmp/test.z", -1, preset = "custom", shuffle_control = sample(0:15,1))
     z <- qread(file="/tmp/test.z")
     stopifnot(identical(z, x1))
     time[i] <- Sys.time() - time[i]
@@ -152,7 +152,7 @@ for(tp in test_points) {
   for(i in 1:3) {
     x1 <- sample(c(T,F,NA), replace=T, size=tp)
     time[i] <- Sys.time()
-    qsave(x1, file="/tmp/test.z", 3)
+    qsave(x1, file="/tmp/test.z", -1, preset = "custom", shuffle_control = sample(0:15,1))
     z <- qread(file="/tmp/test.z")
     stopifnot(identical(z, x1))
     time[i] <- Sys.time() - time[i]
@@ -166,7 +166,7 @@ for(tp in test_points) {
   for(i in 1:3) {
     x1 <- generateList(sample(1:4, replace=T, size=tp))
     time[i] <- Sys.time()
-    qsave(x1, file="/tmp/test.z", 3)
+    qsave(x1, file="/tmp/test.z", -1, preset = "custom", shuffle_control = sample(0:15,1))
     z <- qread(file="/tmp/test.z")
     stopifnot(identical(z, x1))
     time[i] <- Sys.time() - time[i]
@@ -177,7 +177,7 @@ for(tp in test_points) {
 for(i in 1:3) {
   x1 <- rep( replicate(1000, { rep(letters, length.out=2^7+sample(10, size=1)) %>% paste(collapse="") }), length.out=1e5 )
   x1 <- data.frame(str=x1,num = runif(1e5), stringsAsFactors = F)
-  qsave(x1, file="/tmp/test.z", 3)
+  qsave(x1, file="/tmp/test.z", -1, preset = "custom", shuffle_control = sample(0:15,1))
   z <- qread(file="/tmp/test.z")
   stopifnot(identical(z, x1))
 }
@@ -186,7 +186,7 @@ print("Data.frame test")
 for(i in 1:3) {
   x1 <- rep( replicate(1000, { rep(letters, length.out=2^7+sample(10, size=1)) %>% paste(collapse="") }), length.out=1e5 )
   x1 <- data.table(str=x1,num = runif(1e5))
-  qsave(x1, file="/tmp/test.z", 3)
+  qsave(x1, file="/tmp/test.z", -1, preset = "custom", shuffle_control = sample(0:15,1))
   z <- qread(file="/tmp/test.z")
   stopifnot(all(z==x1))
 }
@@ -195,7 +195,7 @@ print("Data.table test")
 for(i in 1:3) {
   x1 <- rep( replicate(1000, { rep(letters, length.out=2^7+sample(10, size=1)) %>% paste(collapse="") }), length.out=1e5 )
   x1 <- tibble(str=x1,num = runif(1e5))
-  qsave(x1, file="/tmp/test.z", 3)
+  qsave(x1, file="/tmp/test.z", -1, preset = "custom", shuffle_control = sample(0:15,1))
   z <- qread(file="/tmp/test.z")
   stopifnot(all(z==x1))
 }
@@ -211,7 +211,7 @@ if (Sys.info()[['sysname']] != "Windows") {
     Encoding(x3) <- "bytes"
     x4 <- rep(x1, x2, length.out=1e4) %>% paste(collapse=";")
     x1 <- c(x1, x2, x3, x4)
-    qsave(x1, file="/tmp/test.z", 3)
+    qsave(x1, file="/tmp/test.z", -1, preset = "custom", shuffle_control = sample(0:15,1))
     z <- qread(file="/tmp/test.z")
     stopifnot(identical(z, x1))
   }
@@ -229,7 +229,7 @@ for(tp in test_points) {
     x1 <- complex(real=re, imaginary=im)
     x1 <- c(NA_complex_, x1)
     time[i] <- Sys.time()
-    qsave(x1, file="/tmp/test.z", 3)
+    qsave(x1, file="/tmp/test.z", -1, preset = "custom", shuffle_control = sample(0:15,1))
     z <- qread(file="/tmp/test.z")
     stopifnot(identical(z, x1))
     time[i] <- Sys.time() - time[i]
@@ -243,7 +243,7 @@ for(tp in test_points) {
   for(i in 1:3) {
     x1 <- factor(rep(letters, length.out=tp), levels=sample(letters), ordered=TRUE)
     time[i] <- Sys.time()
-    qsave(x1, file="/tmp/test.z", 3)
+    qsave(x1, file="/tmp/test.z", -1, preset = "custom", shuffle_control = sample(0:15,1))
     z <- qread(file="/tmp/test.z")
     stopifnot(identical(z, x1))
     time[i] <- Sys.time() - time[i]
@@ -258,7 +258,7 @@ for(i in 1:3) {
   x1 <- random_object_generator(12)
   print(sprintf("Nested list/attributes: %s bytes", object.size(x1) %>% as.numeric))
   time[i] <- Sys.time()
-  qsave(x1, file="/tmp/test.z", 3)
+  qsave(x1, file="/tmp/test.z", -1, preset = "custom", shuffle_control = sample(0:15,1))
   z <- qread(file="/tmp/test.z")
   stopifnot(identical(z, x1))
   time[i] <- Sys.time() - time[i]
@@ -268,16 +268,16 @@ print(sprintf("Nested list/attributes: %s s", signif(mean(time),4)))
 # nested attributes
 time <- vector("numeric", length=3)
 for(i in 1:3) {
-x1 <- as.list(1:26)
-attr(x1[[26]], letters[26]) <- rnorm(100)
-for(i in 25:1) {
-  attr(x1[[i]], letters[i]) <- x1[[i+1]]
-}
-time[i] <- Sys.time()
-qsave(x1, file="/tmp/test.z", 3)
-z <- qread(file="/tmp/test.z")
-stopifnot(identical(z, x1))
-time[i] <- Sys.time() - time[i]
+  x1 <- as.list(1:26)
+  attr(x1[[26]], letters[26]) <- rnorm(100)
+  for(i in 25:1) {
+    attr(x1[[i]], letters[i]) <- x1[[i+1]]
+  }
+  time[i] <- Sys.time()
+  qsave(x1, file="/tmp/test.z", -1, preset = "custom", shuffle_control = sample(0:15,1))
+  z <- qread(file="/tmp/test.z")
+  stopifnot(identical(z, x1))
+  time[i] <- Sys.time() - time[i]
 }
 print(sprintf("Nested attributes: %s s", signif(mean(time),4)))
 
@@ -286,7 +286,7 @@ time <- vector("numeric", length=3)
 for(i in 1:3) {
   x1 <- 1:1e7
   time[i] <- Sys.time()
-  qsave(x1, file="/tmp/test.z", 3)
+  qsave(x1, file="/tmp/test.z", -1, preset = "custom", shuffle_control = sample(0:15,1))
   z <- qread(file="/tmp/test.z")
   stopifnot(identical(z, x1))
   time[i] <- Sys.time() - time[i]
@@ -302,7 +302,7 @@ for(i in 1:3) {
   x1[["b"]] <- runif(1e5)
   x1[["c"]] <- qs::randomStrings(1e2)
   time[i] <- Sys.time()
-  qsave(x1, file="/tmp/test.z", 3)
+  qsave(x1, file="/tmp/test.z", -1, preset = "custom", shuffle_control = sample(0:15,1))
   z <- qread(file="/tmp/test.z")
   stopifnot(identical(z[["a"]], x1[["a"]]))
   stopifnot(identical(z[["b"]], x1[["b"]]))
