@@ -1,4 +1,4 @@
-﻿qs
+qs
 ================
 
 <!-- <img src="qshex.png" width = "130" height = "150" align="right" style="border:0px;padding:15px"> -->
@@ -137,11 +137,11 @@ parameters:
 
 ### Serializing
 
-![](vignettes/df_bench_write.png "df_bench_write")
+![](df_bench_write.png "df_bench_write")
 
 ### De-serializing
 
-![](vignettes/df_bench_read.png "df_bench_read")
+![](df_bench_read.png "df_bench_read")
 
 Benchmarking write and read speed is a bit tricky and depends highly on
 a number of factors, such as operating system, the hardware being run
