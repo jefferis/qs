@@ -1,4 +1,4 @@
 CXX_STD=CXX11
 PKG_CPPFLAGS=-I. -IZSTD -IZSTD/common -IZSTD/decompress -IZSTD/compress -ILZ4 -I/usr/local/include -I/usr/local/include
-PKG_LIBS=-lpthread -L. -L/usr/local/lib -lzstd -L/usr/local/lib -llz4
+PKG_LIBS=-lpthread
 
