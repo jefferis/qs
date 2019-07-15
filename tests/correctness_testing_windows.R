@@ -105,7 +105,7 @@ test_points <- c(0, 1,2,4,8, 2^5-1, 2^5+1, 2^5,2^8-1, 2^8+1,2^8,2^16-1, 2^16+1, 
 extra_test_points <- c(2^32-1, 2^32+1, 2^32) # not enough memory on desktop
 reps <- 5
 
-myfile <- "/tmp/ctest.z"
+myfile <- "N:/ctest.z"
 ################################################################################################
 # some one off tests
 
