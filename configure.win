@@ -1,0 +1,9 @@
+#!/bin/sh
+
+if [ -z "${ALLOW_RCONN}" ]; then
+  echo "Allowing R connections"
+  sed s/\@DEFINE_USE_R_CONNECTION\@// src/qs_common.h.in > src/qs_common.h
+else
+  echo "Excluding R connections"
+  sed s/\@DEFINE_USE_R_CONNECTION\@/\#define\ USE_R_CONNECTION/ src/qs_common.h.in > src/qs_common.h
+fi

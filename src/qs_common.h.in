@@ -59,7 +59,7 @@ https://github.com/traversc/qs
 // do not include by default due to CRAN policies
 // import based on configure script
 // to do: put this into it's own header -.-
-
+@DEFINE_USE_R_CONNECTION@
 #ifdef USE_R_CONNECTION
 
 #define class aclass
