@@ -1,8 +1,14 @@
 Package: qs
 Type: Package
-Title: Quick Serialization of R Objects (legacy version for R <= 3.4)
+<<<<<<< HEAD
+Title: Quick Serialization of R Objects (for R version 3.4 and earlier)
+Version: 0.13.1
+Date: 2019-2-17
+=======
+Title: Quick Serialization of R Objects
 Version: 0.21.2
-Date: 2020-5-31
+Date: 2020-3-9
+>>>>>>> master
 Authors@R: c(
     person("Travers", "Ching", email = "traversc@gmail.com", role = c("aut", "cre", "cph")),
     person("Yann", "Collet", role = c("ctb", "cph"), comment = "Yann Collet is the author of the bundled zstd and lz4 code"),
@@ -21,7 +27,11 @@ SystemRequirements: C++11
 Imports: 
     Rcpp, RApiSerialize
 LinkingTo: Rcpp, RApiSerialize
+<<<<<<< HEAD
+RoxygenNote: 6.0.1
+=======
 RoxygenNote: 6.1.1
+>>>>>>> master
 Suggests: knitr, rmarkdown
 VignetteBuilder: knitr
 Copyright: This package includes code from the 'zstd' library owned by Facebook, Inc. and created by Yann Collet; the 'lz4' library created by Yann Collet; and code derived from the 'Blosc' library created by Francesc Alted.  
