@@ -20,30 +20,37 @@
  https://github.com/traversc/qs
  */
 
+// R 4.0 introduced "bound cells" in order to improve memory efficiency
+// If the bound cell tag is set, CAR(x) is a union types of int (integer and logical), 
+// double, SEXP for CAR(x) where X is LISTSXP, DOTSXP, LANGSXP, PROMSXP
 
 #define USE_RINTERNALS
 #include <Rinternals.h>
 #include <R.h>
+#include <Rversion.h>
 #include "expand_binding_value.h"
 
-#define CLEAR_BNDCELL_TAG(cell) do {		\
-if (BNDCELL_TAG(cell)) {		            \
-  CAR0(cell) = R_NilValue;		          \
-  SET_BNDCELL_TAG(cell, 0);		         \
-}					                                \
-} while (0)
-
-void SET_BNDCELL(SEXP cell, SEXP val)
-{
-  CLEAR_BNDCELL_TAG(cell);
+void SET_BNDCELL(SEXP cell, SEXP val) {
+#if R_VERSION >= R_Version(4, 0, 0)
+  if(BNDCELL_TAG(cell)) {
+    CAR0(cell) = R_NilValue;
+    SET_BNDCELL_TAG(cell, 0);
+  }
   SETCAR(cell, val);
+#endif
 }
 
 int get_bndcell_tag(SEXP e) {
+#if R_VERSION >= R_Version(4, 0, 0)
   return BNDCELL_TAG(e);
+#else
+  return 0;
+#endif
 }
 
+
 void R_expand_binding_value(SEXP b) {
+#if R_VERSION >= R_Version(4, 0, 0)
 #if BOXED_BINDING_CELLS
   SET_BNDCELL_TAG(b, 0);
 #else
@@ -75,9 +82,11 @@ void R_expand_binding_value(SEXP b) {
     }
   }
 #endif
+#endif // R_VERSION >= R_Version(4, 0, 0)
 }
 
 SEXP R_make_binding_value(SEXP val) {
+#if R_VERSION >= R_Version(4, 0, 0)
   SEXP x = PROTECT(Rf_cons(R_NilValue, R_NilValue));
   SET_TAG(x, Rf_install("boundval"));
   SEXPTYPE type = TYPEOF(val);
@@ -95,4 +104,10 @@ SEXP R_make_binding_value(SEXP val) {
   }
   UNPROTECT(1);
   return x;
+#else
+  SEXP x = PROTECT(Rf_cons(R_NilValue, R_NilValue));
+  SET_TAG(x, Rf_install("boundval"));
+  SETCAR(x, val);
+  return x;
+#endif // R_VERSION >= R_Version(4, 0, 0)
 }
