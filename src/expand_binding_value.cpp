@@ -108,6 +108,7 @@ SEXP R_make_binding_value(SEXP val) {
   SEXP x = PROTECT(Rf_cons(R_NilValue, R_NilValue));
   SET_TAG(x, Rf_install("boundval"));
   SETCAR(x, val);
+  UNPROTECT(1);
   return x;
 #endif // R_VERSION >= R_Version(4, 0, 0)
 }
